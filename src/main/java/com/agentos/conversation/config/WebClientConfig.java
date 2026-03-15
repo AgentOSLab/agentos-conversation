@@ -17,6 +17,11 @@ public class WebClientConfig {
     }
 
     @Bean
+    public WebClient credentialStoreWebClient(WebClient.Builder builder) {
+        return builder.baseUrl(serviceUrls.getCredentialStoreUrl()).build();
+    }
+
+    @Bean
     public WebClient hubWebClient(WebClient.Builder builder) {
         return builder.baseUrl(serviceUrls.getHubUrl()).build();
     }

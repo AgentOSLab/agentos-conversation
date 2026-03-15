@@ -52,6 +52,7 @@ agentos:
       trust-gateway: true
   services:
     agent-runtime-url: ${AGENT_RUNTIME_URL:http://localhost:8004}
+    credential-store-url: ${CREDENTIAL_STORE_URL:http://localhost:8007}
     hub-url: ${HUB_URL:http://localhost:8001}
     llm-gateway-url: ${LLM_GATEWAY_URL:http://localhost:8003}
     mcp-runtime-url: ${MCP_RUNTIME_URL:http://localhost:8005}
