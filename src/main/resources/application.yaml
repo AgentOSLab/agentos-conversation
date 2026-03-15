@@ -1,0 +1,64 @@
+server:
+  port: 8011
+
+spring:
+  application:
+    name: agentos-conversation
+
+  r2dbc:
+    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5435}/${DB_NAME:agentos_conversation}
+    username: ${DB_USERNAME:agentos}
+    password: ${DB_PASSWORD:agentos}
+
+  flyway:
+    enabled: true
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5435}/${DB_NAME:agentos_conversation}
+    user: ${DB_USERNAME:agentos}
+    password: ${DB_PASSWORD:agentos}
+    locations: classpath:db/migration
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+  jackson:
+    default-property-inclusion: non_null
+    deserialization:
+      fail-on-unknown-properties: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  level:
+    root: ${LOG_LEVEL:INFO}
+    com.agentos.conversation: DEBUG
+
+agentos:
+  security:
+    jwt:
+      secret: ${JWT_SECRET:}
+      public-key-pem: ${JWT_PUBLIC_KEY_PEM:}
+      public-paths:
+        - /actuator/health
+        - /actuator/info
+      trust-gateway: true
+  services:
+    agent-runtime-url: ${AGENT_RUNTIME_URL:http://localhost:8004}
+    hub-url: ${HUB_URL:http://localhost:8001}
+    llm-gateway-url: ${LLM_GATEWAY_URL:http://localhost:8003}
+    mcp-runtime-url: ${MCP_RUNTIME_URL:http://localhost:8005}
+    rag-url: ${RAG_URL:http://localhost:8010}
+    user-system-url: ${USER_SYSTEM_URL:http://localhost:8006}
+  context:
+    default-window-size: ${CONTEXT_WINDOW_SIZE:20}
+    max-token-budget: ${CONTEXT_MAX_TOKENS:100000}
+    pinned-messages-limit: ${CONTEXT_PINNED_LIMIT:10}
+    summarization-trigger: ${CONTEXT_SUMMARIZATION_TRIGGER:30}
