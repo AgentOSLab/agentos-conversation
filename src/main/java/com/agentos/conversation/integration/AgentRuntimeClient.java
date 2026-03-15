@@ -3,10 +3,8 @@ package com.agentos.conversation.integration;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.Map;
@@ -33,17 +31,6 @@ public class AgentRuntimeClient {
                 .doOnError(e -> log.error("Agent Runtime task submission failed: {}", e.getMessage()));
     }
 
-    public Flux<String> streamTaskEvents(UUID taskId, UUID tenantId, UUID userId) {
-        return webClient.get()
-                .uri("/api/v1/tasks/{taskId}/events", taskId)
-                .header("X-Tenant-Id", tenantId.toString())
-                .header("X-User-Id", userId.toString())
-                .accept(MediaType.TEXT_EVENT_STREAM)
-                .retrieve()
-                .bodyToFlux(String.class)
-                .doOnError(e -> log.error("Agent Runtime SSE stream failed for task {}: {}", taskId, e.getMessage()));
-    }
-
     public Mono<Map<String, Object>> getTask(UUID taskId, UUID tenantId) {
         return webClient.get()
                 .uri("/api/v1/tasks/{taskId}", taskId)
@@ -63,5 +50,14 @@ public class AgentRuntimeClient {
                 .retrieve()
                 .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
                 .doOnError(e -> log.error("Failed to submit human input for task {}: {}", taskId, e.getMessage()));
+    }
+
+    public Mono<Void> cancelTask(UUID taskId, UUID tenantId) {
+        return webClient.post()
+                .uri("/api/v1/tasks/{taskId}/cancel", taskId)
+                .header("X-Tenant-Id", tenantId.toString())
+                .retrieve()
+                .bodyToMono(Void.class)
+                .doOnError(e -> log.error("Failed to cancel task {}: {}", taskId, e.getMessage()));
     }
 }

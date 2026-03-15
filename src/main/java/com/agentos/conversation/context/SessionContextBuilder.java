@@ -11,29 +11,47 @@ import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.util.*;
 
 /**
- * Assembles the LLM context for a conversation turn following the
- * prompt-caching-optimized structure:
+ * Assembles the LLM context for a conversation turn.
  *
+ * Three-level caching strategy:
+ *   L1: JVM heap — session entity (within request scope, not persisted across requests)
+ *   L2: Redis — recent messages, pinned messages, conversation summary (TTL-based)
+ *   L3: PostgreSQL — authoritative source
+ *
+ * Cache invalidation: writes through ConversationSessionService invalidate
+ * the relevant Redis keys. Read path: Redis → DB fallback with write-through.
+ *
+ * Context structure (prompt-caching-optimized):
  *   CACHED PREFIX (stable across turns):
  *     system_prompt + agent_persona + execution_mode_rules + tool_definitions
  *     + rag_namespace_schemas + [cache_control: ephemeral]
- *
  *   DYNAMIC SUFFIX (changes each turn):
- *     conversation_summary (if session > window) + recent_messages
- *     + pinned_outputs + rag_results + current_user_input
+ *     conversation_summary + recent_messages + pinned_outputs
+ *     + rag_results + current_user_input
+ *
+ * Token-based windowing: messages are added to the context window until the
+ * estimated token count reaches maxTokenBudget. Thinking/reasoning messages
+ * and verbose tool outputs are excluded or compressed to save context space.
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class SessionContextBuilder {
 
+    private static final String CACHE_PREFIX = "ctx:";
+    private static final Duration CACHE_TTL = Duration.ofMinutes(5);
+    private static final Set<String> EXCLUDED_CONTENT_TYPES = Set.of("thinking", "reasoning");
+
     private final ConversationSessionService sessionService;
+    private final ReactiveStringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 
     @Value("${agentos.context.default-window-size:20}")
@@ -44,6 +62,9 @@ public class SessionContextBuilder {
 
     @Value("${agentos.context.pinned-messages-limit:10}")
     private int pinnedMessagesLimit;
+
+    @Value("${agentos.context.tool-output-max-chars:2000}")
+    private int toolOutputMaxChars;
 
     public Mono<AssembledContext> buildContext(ContextRequest request) {
         UUID sessionId = request.getSessionId();
@@ -56,18 +77,31 @@ public class SessionContextBuilder {
                 .defaultIfEmpty(buildStandaloneContext(request));
     }
 
+    /**
+     * Invalidate all cached context data for a session.
+     * Call after appending messages, updating summary, or changing pinned messages.
+     */
+    public Mono<Void> invalidateSessionCache(UUID sessionId) {
+        return redisTemplate.delete(
+                        CACHE_PREFIX + "recent:" + sessionId,
+                        CACHE_PREFIX + "pinned:" + sessionId,
+                        CACHE_PREFIX + "summary:" + sessionId)
+                .then();
+    }
+
     private Mono<AssembledContext> assembleFromSession(ConversationSessionEntity session,
                                                        ContextRequest request) {
-        Mono<List<ConversationMessageEntity>> recentMono =
-                sessionService.getRecentMessages(session.getId(), defaultWindowSize);
+        UUID sessionId = session.getId();
 
-        Mono<List<ConversationMessageEntity>> pinnedMono =
-                sessionService.getPinnedMessages(session.getId());
+        Mono<List<ConversationMessageEntity>> recentMono = getCachedRecentMessages(sessionId);
+        Mono<List<ConversationMessageEntity>> pinnedMono = getCachedPinnedMessages(sessionId);
+        Mono<String> summaryMono = getCachedSummary(sessionId, session.getConversationSummary());
 
-        return Mono.zip(recentMono, pinnedMono)
+        return Mono.zip(recentMono, pinnedMono, summaryMono)
                 .map(tuple -> {
                     List<ConversationMessageEntity> recentMessages = tuple.getT1();
                     List<ConversationMessageEntity> pinnedMessages = tuple.getT2();
+                    String summary = tuple.getT3();
 
                     List<Map<String, Object>> messages = new ArrayList<>();
                     int tokenEstimate = 0;
@@ -77,10 +111,10 @@ public class SessionContextBuilder {
                     messages.add(systemMessage);
                     tokenEstimate += estimateTokens(systemMessage);
 
-                    if (session.getConversationSummary() != null && !session.getConversationSummary().isBlank()) {
+                    if (summary != null && !summary.isBlank()) {
                         Map<String, Object> summaryMsg = Map.of(
                                 "role", "system",
-                                "content", "Previous conversation summary:\n" + session.getConversationSummary()
+                                "content", "Previous conversation summary:\n" + summary
                         );
                         messages.add(summaryMsg);
                         tokenEstimate += estimateTokens(summaryMsg);
@@ -98,7 +132,10 @@ public class SessionContextBuilder {
                     for (ConversationMessageEntity recent : recentMessages) {
                         if (pinnedIds.contains(recent.getId())) continue;
                         if (tokenEstimate >= maxTokenBudget) break;
+                        if (shouldExcludeFromContext(recent)) continue;
+
                         Map<String, Object> msg = messageToMap(recent);
+                        compressToolOutputIfNeeded(msg);
                         messages.add(msg);
                         tokenEstimate += estimateTokens(msg);
                     }
@@ -125,10 +162,110 @@ public class SessionContextBuilder {
                             .estimatedTokens(tokenEstimate)
                             .sessionId(session.getId())
                             .messageCountInWindow(recentMessages.size())
-                            .hasSummary(session.getConversationSummary() != null)
+                            .hasSummary(summary != null && !summary.isBlank())
                             .build();
                 });
     }
+
+    // ─────────────── Redis L2 Cache ───────────────
+
+    private Mono<List<ConversationMessageEntity>> getCachedRecentMessages(UUID sessionId) {
+        String key = CACHE_PREFIX + "recent:" + sessionId;
+
+        return redisTemplate.opsForValue().get(key)
+                .flatMap(json -> {
+                    try {
+                        List<ConversationMessageEntity> cached = objectMapper.readValue(json,
+                                new TypeReference<>() {});
+                        return Mono.just(cached);
+                    } catch (JsonProcessingException e) {
+                        log.debug("Cache deserialization miss for recent messages, fetching from DB");
+                        return Mono.<List<ConversationMessageEntity>>empty();
+                    }
+                })
+                .switchIfEmpty(
+                        sessionService.getRecentMessages(sessionId, defaultWindowSize)
+                                .flatMap(messages -> cacheAndReturn(key, messages))
+                );
+    }
+
+    private Mono<List<ConversationMessageEntity>> getCachedPinnedMessages(UUID sessionId) {
+        String key = CACHE_PREFIX + "pinned:" + sessionId;
+
+        return redisTemplate.opsForValue().get(key)
+                .flatMap(json -> {
+                    try {
+                        List<ConversationMessageEntity> cached = objectMapper.readValue(json,
+                                new TypeReference<>() {});
+                        return Mono.just(cached);
+                    } catch (JsonProcessingException e) {
+                        log.debug("Cache deserialization miss for pinned messages, fetching from DB");
+                        return Mono.<List<ConversationMessageEntity>>empty();
+                    }
+                })
+                .switchIfEmpty(
+                        sessionService.getPinnedMessages(sessionId)
+                                .flatMap(messages -> cacheAndReturn(key, messages))
+                );
+    }
+
+    private Mono<String> getCachedSummary(UUID sessionId, String sessionSummary) {
+        if (sessionSummary != null && !sessionSummary.isBlank()) {
+            return Mono.just(sessionSummary);
+        }
+
+        String key = CACHE_PREFIX + "summary:" + sessionId;
+        return redisTemplate.opsForValue().get(key)
+                .defaultIfEmpty("");
+    }
+
+    private <T> Mono<T> cacheAndReturn(String key, T value) {
+        try {
+            String json = objectMapper.writeValueAsString(value);
+            return redisTemplate.opsForValue().set(key, json, CACHE_TTL)
+                    .thenReturn(value);
+        } catch (JsonProcessingException e) {
+            log.warn("Failed to cache value for key {}: {}", key, e.getMessage());
+            return Mono.just(value);
+        }
+    }
+
+    // ─────────────── Context Filtering & Compression ───────────────
+
+    /**
+     * Exclude thinking/reasoning messages from the context window.
+     * These are valuable for the user's visibility but waste LLM context space.
+     */
+    private boolean shouldExcludeFromContext(ConversationMessageEntity message) {
+        if (message.getMetadata() == null) return false;
+        try {
+            Map<String, Object> meta = objectMapper.readValue(message.getMetadata(),
+                    new TypeReference<>() {});
+            String contentType = (String) meta.get("contentType");
+            return contentType != null && EXCLUDED_CONTENT_TYPES.contains(contentType);
+        } catch (JsonProcessingException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Compress tool output content if it exceeds the threshold.
+     * Keeps the first and last portions to preserve intent and result.
+     */
+    @SuppressWarnings("unchecked")
+    private void compressToolOutputIfNeeded(Map<String, Object> msg) {
+        if (!"tool".equals(msg.get("role"))) return;
+        Object content = msg.get("content");
+        if (content instanceof String s && s.length() > toolOutputMaxChars) {
+            int halfLimit = toolOutputMaxChars / 2;
+            String compressed = s.substring(0, halfLimit)
+                    + "\n...[truncated " + (s.length() - toolOutputMaxChars) + " chars]...\n"
+                    + s.substring(s.length() - halfLimit);
+            msg.put("content", compressed);
+        }
+    }
+
+    // ─────────────── Context Building Helpers ───────────────
 
     private AssembledContext buildStandaloneContext(ContextRequest request) {
         List<Map<String, Object>> messages = new ArrayList<>();

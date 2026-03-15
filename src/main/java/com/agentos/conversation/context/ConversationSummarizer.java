@@ -6,23 +6,34 @@ import com.agentos.conversation.service.ConversationSessionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.util.*;
 
 /**
  * Auto-summarizes older conversation messages when a session exceeds
  * the sliding window. Uses a fast model via LLM Gateway for the
  * summarization call itself (minimal cost).
+ *
+ * Multi-instance safe: uses a Redis distributed lock to ensure only
+ * one instance summarizes a given session at a time. Other instances
+ * that trigger summarization concurrently will skip (lock-or-skip).
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class ConversationSummarizer {
 
+    private static final String LOCK_PREFIX = "lock:summarize:";
+    private static final Duration LOCK_TTL = Duration.ofSeconds(60);
+
     private final ConversationSessionService sessionService;
     private final LlmGatewayClient llmGatewayClient;
+    private final ReactiveStringRedisTemplate redisTemplate;
+    private final SessionContextBuilder contextBuilder;
 
     @Value("${agentos.context.summarization-trigger:30}")
     private int summarizationTrigger;
@@ -42,21 +53,50 @@ public class ConversationSummarizer {
                         return Mono.empty();
                     }
 
-                    return sessionService.getMessagesPaged(sessionId, excessMessages, 0)
-                            .flatMap(page -> {
-                                List<ConversationMessageEntity> oldMessages = page.getItems();
-                                if (oldMessages.isEmpty()) {
+                    return acquireLock(sessionId)
+                            .flatMap(acquired -> {
+                                if (!acquired) {
+                                    log.debug("Summarization lock not acquired for session {} — another instance is summarizing", sessionId);
                                     return Mono.empty();
                                 }
 
-                                String existingSummary = session.getConversationSummary();
-                                return generateSummary(oldMessages, existingSummary)
-                                        .flatMap(newSummary ->
-                                                sessionService.updateConversationSummary(sessionId, newSummary));
+                                return sessionService.getMessagesPaged(sessionId, excessMessages, 0)
+                                        .flatMap(page -> {
+                                            List<ConversationMessageEntity> oldMessages = page.getItems();
+                                            if (oldMessages.isEmpty()) {
+                                                return releaseLock(sessionId);
+                                            }
+
+                                            String existingSummary = session.getConversationSummary();
+                                            return generateSummary(oldMessages, existingSummary)
+                                                    .flatMap(newSummary ->
+                                                            sessionService.updateConversationSummary(sessionId, newSummary)
+                                                                    .then(contextBuilder.invalidateSessionCache(sessionId)))
+                                                    .then(releaseLock(sessionId));
+                                        })
+                                        .onErrorResume(e -> {
+                                            log.error("Summarization failed for session {}: {}", sessionId, e.getMessage());
+                                            return releaseLock(sessionId);
+                                        });
                             });
                 })
                 .then();
     }
+
+    // ─────────────── Redis Distributed Lock ───────────────
+
+    private Mono<Boolean> acquireLock(UUID sessionId) {
+        String lockKey = LOCK_PREFIX + sessionId;
+        return redisTemplate.opsForValue()
+                .setIfAbsent(lockKey, UUID.randomUUID().toString(), LOCK_TTL)
+                .defaultIfEmpty(false);
+    }
+
+    private Mono<Void> releaseLock(UUID sessionId) {
+        return redisTemplate.delete(LOCK_PREFIX + sessionId).then();
+    }
+
+    // ─────────────── Summary Generation ───────────────
 
     @SuppressWarnings("unchecked")
     private Mono<String> generateSummary(List<ConversationMessageEntity> messages,
@@ -69,6 +109,8 @@ public class ConversationSummarizer {
 
         conversationText.append("New messages to incorporate:\n");
         for (ConversationMessageEntity msg : messages) {
+            if (isThinkingMessage(msg)) continue;
+
             conversationText.append("[").append(msg.getRole()).append("]: ");
             if (msg.getContent() != null) {
                 String content = msg.getContent();
@@ -103,5 +145,11 @@ public class ConversationSummarizer {
                     log.warn("Conversation summarization failed: {}", e.getMessage());
                     return Mono.just(existingSummary != null ? existingSummary : "");
                 });
+    }
+
+    private boolean isThinkingMessage(ConversationMessageEntity msg) {
+        if (msg.getMetadata() == null) return false;
+        return msg.getMetadata().contains("\"contentType\":\"thinking\"")
+                || msg.getMetadata().contains("\"contentType\":\"reasoning\"");
     }
 }

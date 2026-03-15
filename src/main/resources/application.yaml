@@ -62,3 +62,4 @@ agentos:
     max-token-budget: ${CONTEXT_MAX_TOKENS:100000}
     pinned-messages-limit: ${CONTEXT_PINNED_LIMIT:10}
     summarization-trigger: ${CONTEXT_SUMMARIZATION_TRIGGER:30}
+    tool-output-max-chars: ${CONTEXT_TOOL_OUTPUT_MAX_CHARS:2000}

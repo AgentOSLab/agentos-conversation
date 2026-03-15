@@ -131,6 +131,10 @@ public class ConversationSessionService {
         return sessionRepository.incrementTaskCount(sessionId, OffsetDateTime.now());
     }
 
+    public Mono<ConversationMessageEntity> getMessageById(UUID messageId) {
+        return messageRepository.findById(messageId);
+    }
+
     private String toJson(Map<String, Object> map) {
         if (map == null) return null;
         try { return objectMapper.writeValueAsString(map); }
