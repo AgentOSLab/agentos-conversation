@@ -162,6 +162,30 @@ public class SseAggregator {
     }
 
     /**
+     * Publish a context_usage event so the frontend can display context utilization.
+     */
+    public Mono<Void> publishContextUsage(UUID runId, UUID sessionId,
+                                           Map<String, Object> contextUsage) {
+        return nextSequence(runId)
+                .flatMap(seq -> {
+                    String eventId = formatEventId(runId, seq);
+                    RunEvent event = RunEvent.builder()
+                            .eventId(eventId)
+                            .runId(runId)
+                            .sessionId(sessionId)
+                            .type("context_usage")
+                            .timestamp(OffsetDateTime.now())
+                            .display(DisplayMetadata.builder()
+                                    .category("detail").priority("important")
+                                    .summary("Context usage").build())
+                            .contextUsage(contextUsage)
+                            .build();
+
+                    return bufferAndPublish(runId, event, seq);
+                });
+    }
+
+    /**
      * Publish message_started event.
      */
     public Mono<Void> publishMessageStarted(UUID runId, UUID sessionId) {
@@ -472,6 +496,7 @@ public class SseAggregator {
 
     // ─────────────── Helpers ───────────────
 
+    @SuppressWarnings("unchecked")
     private void applyExtra(RunEvent event, Map<String, Object> extra) {
         if (extra == null) return;
         if (extra.containsKey("content")) event.setContent((String) extra.get("content"));
@@ -479,14 +504,13 @@ public class SseAggregator {
             event.setMessageId(UUID.fromString((String) extra.get("messageId")));
         }
         if (extra.containsKey("usage")) {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> usage = (Map<String, Object>) extra.get("usage");
-            event.setUsage(usage);
+            event.setUsage((Map<String, Object>) extra.get("usage"));
+        }
+        if (extra.containsKey("contextUsage")) {
+            event.setContextUsage((Map<String, Object>) extra.get("contextUsage"));
         }
         if (extra.containsKey("error")) {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> error = (Map<String, Object>) extra.get("error");
-            event.setError(error);
+            event.setError((Map<String, Object>) extra.get("error"));
         }
         if (extra.containsKey("finalStatus")) {
             event.setFinalStatus((String) extra.get("finalStatus"));

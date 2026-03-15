@@ -27,6 +27,7 @@ public class ConversationMessageEntity {
     private String stepId;
 
     private Integer tokenCount;
+    private String metadata;
 
     @Builder.Default
     private Boolean pinned = false;

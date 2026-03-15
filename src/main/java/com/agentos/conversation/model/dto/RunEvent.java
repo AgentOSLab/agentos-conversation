@@ -44,6 +44,7 @@ public class RunEvent {
 
     private UUID messageId;
     private Map<String, Object> usage;
+    private Map<String, Object> contextUsage;
     private Map<String, Object> error;
 
     private String finalStatus;

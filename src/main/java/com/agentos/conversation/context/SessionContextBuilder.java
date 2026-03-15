@@ -51,6 +51,7 @@ public class SessionContextBuilder {
     private static final Set<String> EXCLUDED_CONTENT_TYPES = Set.of("thinking", "reasoning");
 
     private final ConversationSessionService sessionService;
+    private final ModelContextService modelContextService;
     private final ReactiveStringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 
@@ -96,12 +97,16 @@ public class SessionContextBuilder {
         Mono<List<ConversationMessageEntity>> recentMono = getCachedRecentMessages(sessionId);
         Mono<List<ConversationMessageEntity>> pinnedMono = getCachedPinnedMessages(sessionId);
         Mono<String> summaryMono = getCachedSummary(sessionId, session.getConversationSummary());
+        Mono<Integer> contextWindowMono = modelContextService.getContextWindow(request.getTenantId());
 
-        return Mono.zip(recentMono, pinnedMono, summaryMono)
+        return Mono.zip(recentMono, pinnedMono, summaryMono, contextWindowMono)
                 .map(tuple -> {
                     List<ConversationMessageEntity> recentMessages = tuple.getT1();
                     List<ConversationMessageEntity> pinnedMessages = tuple.getT2();
                     String summary = tuple.getT3();
+                    int contextWindow = tuple.getT4();
+
+                    int effectiveBudget = Math.min(contextWindow, maxTokenBudget);
 
                     List<Map<String, Object>> messages = new ArrayList<>();
                     int tokenEstimate = 0;
@@ -122,7 +127,7 @@ public class SessionContextBuilder {
 
                     Set<UUID> pinnedIds = new HashSet<>();
                     for (ConversationMessageEntity pinned : pinnedMessages) {
-                        if (tokenEstimate >= maxTokenBudget) break;
+                        if (tokenEstimate >= effectiveBudget) break;
                         Map<String, Object> msg = messageToMap(pinned);
                         messages.add(msg);
                         pinnedIds.add(pinned.getId());
@@ -131,7 +136,7 @@ public class SessionContextBuilder {
 
                     for (ConversationMessageEntity recent : recentMessages) {
                         if (pinnedIds.contains(recent.getId())) continue;
-                        if (tokenEstimate >= maxTokenBudget) break;
+                        if (tokenEstimate >= effectiveBudget) break;
                         if (shouldExcludeFromContext(recent)) continue;
 
                         Map<String, Object> msg = messageToMap(recent);
@@ -156,10 +161,16 @@ public class SessionContextBuilder {
                         ));
                     }
 
+                    double usagePercent = contextWindow > 0
+                            ? (tokenEstimate * 100.0) / contextWindow
+                            : 0.0;
+
                     return AssembledContext.builder()
                             .messages(messages)
                             .tools(request.getTools())
                             .estimatedTokens(tokenEstimate)
+                            .maxContextTokens(contextWindow)
+                            .contextUsagePercent(Math.round(usagePercent * 10.0) / 10.0)
                             .sessionId(session.getId())
                             .messageCountInWindow(recentMessages.size())
                             .hasSummary(summary != null && !summary.isBlank())
@@ -282,10 +293,15 @@ public class SessionContextBuilder {
             messages.add(Map.of("role", "user", "content", request.getCurrentUserMessage()));
         }
 
+        int estimated = estimateTokens(messages);
         return AssembledContext.builder()
                 .messages(messages)
                 .tools(request.getTools())
-                .estimatedTokens(estimateTokens(messages))
+                .estimatedTokens(estimated)
+                .maxContextTokens(maxTokenBudget)
+                .contextUsagePercent(maxTokenBudget > 0
+                        ? Math.round((estimated * 1000.0) / maxTokenBudget) / 10.0
+                        : 0.0)
                 .messageCountInWindow(messages.size())
                 .hasSummary(false)
                 .build();
@@ -373,6 +389,8 @@ public class SessionContextBuilder {
         private List<Map<String, Object>> messages;
         private List<Map<String, Object>> tools;
         private int estimatedTokens;
+        private int maxContextTokens;
+        private double contextUsagePercent;
         private UUID sessionId;
         private int messageCountInWindow;
         private boolean hasSummary;

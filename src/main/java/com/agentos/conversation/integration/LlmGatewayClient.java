@@ -56,6 +56,26 @@ public class LlmGatewayClient {
                 .bodyToFlux(new ParameterizedTypeReference<Map<String, Object>>() {});
     }
 
+    @SuppressWarnings("unchecked")
+    public Mono<List<Map<String, Object>>> listModels(UUID tenantId) {
+        return webClient.get()
+                .uri("/api/v1/models")
+                .header("X-Tenant-Id", tenantId.toString())
+                .retrieve()
+                .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
+                .map(response -> {
+                    Object models = response.get("models");
+                    if (models instanceof List<?> list) {
+                        return (List<Map<String, Object>>) (List<?>) list;
+                    }
+                    return List.<Map<String, Object>>of();
+                })
+                .onErrorResume(e -> {
+                    log.warn("Failed to fetch models from LLM Gateway: {}", e.getMessage());
+                    return Mono.just(List.of());
+                });
+    }
+
     public Mono<Map<String, Object>> chat(Map<String, Object> requestBody) {
         UUID tenantId = null;
         if (requestBody.containsKey("tenantId")) {

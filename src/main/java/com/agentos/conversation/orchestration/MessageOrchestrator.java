@@ -2,6 +2,7 @@ package com.agentos.conversation.orchestration;
 
 import com.agentos.conversation.context.ConversationSummarizer;
 import com.agentos.conversation.context.SessionContextBuilder;
+import com.agentos.conversation.context.SessionContextBuilder.AssembledContext;
 import com.agentos.conversation.context.SessionContextBuilder.ContextRequest;
 import com.agentos.conversation.integration.AgentRuntimeClient;
 import com.agentos.conversation.integration.LlmGatewayClient;
@@ -15,11 +16,13 @@ import com.agentos.conversation.service.ConversationSessionService;
 import com.agentos.conversation.service.RunService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -44,6 +47,7 @@ public class MessageOrchestrator {
     private final LlmGatewayClient llmGatewayClient;
     private final AgentRuntimeClient agentRuntimeClient;
     private final SseAggregator sseAggregator;
+    private final ReactiveRedisTemplate<String, String> redisTemplate;
 
     /**
      * Create a Run from a user message, persist the message, route intent,
@@ -124,10 +128,13 @@ public class MessageOrchestrator {
                                 UUID runId = run.getId();
                                 UUID sessionId = run.getSessionId();
 
+                                Map<String, Object> ctxUsage = buildContextUsageMap(ctx, false);
+
                                 return sseAggregator.publishEvent(runId, sessionId, "run_started",
                                                 RunEvent.DisplayMetadata.builder()
                                                         .category("execution").priority("important")
                                                         .summary("Run started").build(), null)
+                                        .then(sseAggregator.publishContextUsage(runId, sessionId, ctxUsage))
                                         .then(sseAggregator.publishMessageStarted(runId, sessionId))
                                         .then(Mono.defer(() -> {
                                             StringBuilder fullContent = new StringBuilder();
@@ -162,7 +169,9 @@ public class MessageOrchestrator {
                                         }));
                             });
                 }))
-                .then(Mono.defer(() -> summarizer.summarizeIfNeeded(run.getSessionId(), tenantId)));
+                .then(Mono.defer(() ->
+                        summarizer.summarizeIfNeeded(run.getSessionId(), tenantId)))
+                .then();
     }
 
     private Mono<Void> persistAndFinalize(RunEntity run, String assistantContent) {
@@ -221,21 +230,38 @@ public class MessageOrchestrator {
                                          UUID tenantId, UUID userId) {
         return runService.markRunning(run.getId())
                 .then(Mono.defer(() -> {
-                    Map<String, Object> taskRequest = new LinkedHashMap<>();
-                    taskRequest.put("input", content);
-                    taskRequest.put("sessionId", run.getSessionId().toString());
-                    taskRequest.put("interactionMode", route.getInteractionMode());
+                    ContextRequest contextRequest = ContextRequest.builder()
+                            .sessionId(run.getSessionId())
+                            .tenantId(tenantId)
+                            .currentUserMessage(content)
+                            .build();
 
-                    if (session.getBoundEntityId() != null) {
-                        taskRequest.put("agentId", session.getBoundEntityId().toString());
-                    }
+                    return contextBuilder.buildContext(contextRequest)
+                            .flatMap(assembledCtx -> {
+                                Map<String, Object> ctxUsage = buildContextUsageMap(assembledCtx, false);
 
-                    return agentRuntimeClient.submitTask(taskRequest, tenantId, userId)
+                                Map<String, Object> taskRequest = new LinkedHashMap<>();
+                                taskRequest.put("input", Map.of("content", content));
+                                taskRequest.put("sessionId", run.getSessionId().toString());
+                                taskRequest.put("interactionMode", route.getInteractionMode());
+                                taskRequest.put("conversationHistory", assembledCtx.getMessages());
+
+                                if (session.getBoundEntityId() != null) {
+                                    taskRequest.put("agentId", session.getBoundEntityId().toString());
+                                }
+
+                                return sseAggregator.publishContextUsage(
+                                                run.getId(), run.getSessionId(), ctxUsage)
+                                        .then(agentRuntimeClient.submitTask(taskRequest, tenantId, userId));
+                            })
                             .flatMap(taskResponse -> {
                                 String taskIdStr = String.valueOf(taskResponse.get("taskId"));
                                 UUID taskId = UUID.fromString(taskIdStr);
 
                                 return runService.setTaskId(run.getId(), taskId)
+                                        .then(redisTemplate.opsForValue().set(
+                                                "run:task:" + taskId, run.getId().toString(),
+                                                Duration.ofHours(24)))
                                         .then(sessionService.incrementTaskCount(run.getSessionId()))
                                         .then(sseAggregator.registerAgentTaskRun(
                                                 run.getId(), taskId, run.getSessionId(), tenantId));
@@ -335,6 +361,18 @@ public class MessageOrchestrator {
                                                 });
                                     }));
                 });
+    }
+
+    private Map<String, Object> buildContextUsageMap(AssembledContext ctx,
+                                                      boolean summarizationTriggered) {
+        Map<String, Object> usage = new LinkedHashMap<>();
+        usage.put("estimatedTokens", ctx.getEstimatedTokens());
+        usage.put("maxContextTokens", ctx.getMaxContextTokens());
+        usage.put("usagePercent", ctx.getContextUsagePercent());
+        usage.put("messageCount", ctx.getMessageCountInWindow());
+        usage.put("hasSummary", ctx.isHasSummary());
+        usage.put("summarizationTriggered", summarizationTriggered);
+        return usage;
     }
 
     private String mapRouteType(RouteType routeType) {
