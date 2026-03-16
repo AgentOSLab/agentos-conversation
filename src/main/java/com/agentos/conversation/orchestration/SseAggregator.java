@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.connection.ReactiveSubscription;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.data.redis.listener.ChannelTopic;
@@ -46,7 +47,15 @@ public class SseAggregator {
     private static final String EVENT_SEQ_PREFIX = "run_seq:";
     private static final String EVENT_CHANNEL_PREFIX = "run_channel:";
     private static final String RUN_META_PREFIX = "run_meta:";
-    private static final Duration EVENT_BUFFER_TTL = Duration.ofMinutes(15);
+
+    /**
+     * TTL for the Redis event buffer Sorted Set (and associated metadata keys).
+     * Must be longer than the longest expected agent task execution time so that
+     * clients reconnecting mid-task can still replay missed events.
+     * Default 60 minutes; override with {@code agentos.sse.event-buffer-ttl-minutes}.
+     */
+    @Value("${agentos.sse.event-buffer-ttl-minutes:60}")
+    private int eventBufferTtlMinutes;
 
     private static final Set<String> TERMINAL_TASK_EVENTS = Set.of(
             "task.completed", "task.failed", "task.cancelled", "task.timeout");
@@ -318,7 +327,13 @@ public class SseAggregator {
     private void applyAgentRuntimePayload(RunEvent runEvent, String type,
                                            Map<String, Object> payload) {
         switch (type) {
-            case "thinking", "reasoning" -> runEvent.setContent(strVal(payload, "content"));
+            // P3-016: LlmCallStepExecutor emits payload key "thinkingContent";
+            // direct publishThinking() calls (simple chat path) use "content".
+            // Accept both so neither path silently drops thinking text.
+            case "thinking", "reasoning" -> {
+                String tc = strVal(payload, "thinkingContent");
+                runEvent.setContent(tc != null ? tc : strVal(payload, "content"));
+            }
             case "token" -> {
                 runEvent.setContent(strVal(payload, "content"));
                 runEvent.setIndex(intVal(payload, "index"));
@@ -361,7 +376,8 @@ public class SseAggregator {
 
     private String mapEventType(String agentRuntimeType) {
         return switch (agentRuntimeType) {
-            case "reasoning" -> "thinking";
+            // P3-016: step.llm.thinking is the canonical type emitted by LlmCallStepExecutor
+            case "step.llm.thinking", "reasoning" -> "thinking";
             case "human_input_required" -> "waiting_for_input";
             case "task_completed", "task.completed", "completed" -> "run_completed";
             case "task_failed", "task.failed", "failed" -> "run_failed";
@@ -397,7 +413,8 @@ public class SseAggregator {
         }
 
         return switch (type) {
-            case "thinking", "reasoning" -> DisplayMetadata.builder()
+            // step.llm.thinking is normalized to "thinking" by mapEventType() before reaching here
+            case "thinking", "reasoning", "step.llm.thinking" -> DisplayMetadata.builder()
                     .category("thinking").priority("important").summary("Thinking...").build();
             case "tool_call" -> DisplayMetadata.builder()
                     .category("execution").priority("important")
@@ -427,7 +444,7 @@ public class SseAggregator {
                 .increment(EVENT_SEQ_PREFIX + runId)
                 .doOnNext(seq -> {
                     if (seq == 1L) {
-                        redisTemplate.expire(EVENT_SEQ_PREFIX + runId, EVENT_BUFFER_TTL).subscribe();
+                        redisTemplate.expire(EVENT_SEQ_PREFIX + runId, Duration.ofMinutes(eventBufferTtlMinutes)).subscribe();
                     }
                 });
     }
@@ -438,7 +455,7 @@ public class SseAggregator {
         String channelKey = EVENT_CHANNEL_PREFIX + runId;
 
         return redisTemplate.opsForZSet().add(bufferKey, json, seq)
-                .then(redisTemplate.expire(bufferKey, EVENT_BUFFER_TTL))
+                .then(redisTemplate.expire(bufferKey, Duration.ofMinutes(eventBufferTtlMinutes)))
                 .then(redisTemplate.convertAndSend(channelKey, json))
                 .then(runService.updateLastEventId(runId, event.getEventId()))
                 .then();
@@ -457,7 +474,7 @@ public class SseAggregator {
     private Mono<Void> storeRunMeta(UUID runId, UUID sessionId) {
         String metaKey = RUN_META_PREFIX + runId;
         return redisTemplate.opsForValue()
-                .set(metaKey, sessionId.toString(), EVENT_BUFFER_TTL)
+                .set(metaKey, sessionId.toString(), Duration.ofMinutes(eventBufferTtlMinutes))
                 .then();
     }
 

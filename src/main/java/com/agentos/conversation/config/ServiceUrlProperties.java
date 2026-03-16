@@ -10,10 +10,8 @@ import org.springframework.stereotype.Component;
 public class ServiceUrlProperties {
 
     private String agentRuntimeUrl = "http://localhost:8004";
-    private String credentialStoreUrl = "http://localhost:8007";
     private String hubUrl = "http://localhost:8001";
     private String llmGatewayUrl = "http://localhost:8003";
-    private String mcpRuntimeUrl = "http://localhost:8005";
     private String ragUrl = "http://localhost:8010";
     private String userSystemUrl = "http://localhost:8006";
 }

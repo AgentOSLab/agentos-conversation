@@ -17,11 +17,6 @@ public class WebClientConfig {
     }
 
     @Bean
-    public WebClient credentialStoreWebClient(WebClient.Builder builder) {
-        return builder.baseUrl(serviceUrls.getCredentialStoreUrl()).build();
-    }
-
-    @Bean
     public WebClient hubWebClient(WebClient.Builder builder) {
         return builder.baseUrl(serviceUrls.getHubUrl()).build();
     }
@@ -29,11 +24,6 @@ public class WebClientConfig {
     @Bean
     public WebClient llmGatewayWebClient(WebClient.Builder builder) {
         return builder.baseUrl(serviceUrls.getLlmGatewayUrl()).build();
-    }
-
-    @Bean
-    public WebClient mcpRuntimeWebClient(WebClient.Builder builder) {
-        return builder.baseUrl(serviceUrls.getMcpRuntimeUrl()).build();
     }
 
     @Bean

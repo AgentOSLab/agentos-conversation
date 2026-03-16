@@ -52,10 +52,8 @@ agentos:
       trust-gateway: true
   services:
     agent-runtime-url: ${AGENT_RUNTIME_URL:http://localhost:8004}
-    credential-store-url: ${CREDENTIAL_STORE_URL:http://localhost:8007}
     hub-url: ${HUB_URL:http://localhost:8001}
     llm-gateway-url: ${LLM_GATEWAY_URL:http://localhost:8003}
-    mcp-runtime-url: ${MCP_RUNTIME_URL:http://localhost:8005}
     rag-url: ${RAG_URL:http://localhost:8010}
     user-system-url: ${USER_SYSTEM_URL:http://localhost:8006}
   context:
@@ -64,3 +62,7 @@ agentos:
     pinned-messages-limit: ${CONTEXT_PINNED_LIMIT:10}
     summarization-trigger: ${CONTEXT_SUMMARIZATION_TRIGGER:30}
     tool-output-max-chars: ${CONTEXT_TOOL_OUTPUT_MAX_CHARS:2000}
+  sse:
+    # SSE event buffer TTL in Redis. Must exceed the longest expected agent task
+    # execution time to allow clients to replay missed events on reconnect.
+    event-buffer-ttl-minutes: ${SSE_EVENT_BUFFER_TTL_MINUTES:60}

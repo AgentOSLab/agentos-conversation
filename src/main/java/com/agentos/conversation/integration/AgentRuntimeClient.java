@@ -7,12 +7,16 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 @Slf4j
 @Component
 public class AgentRuntimeClient {
+
+    private static final ParameterizedTypeReference<Map<String, Object>> MAP_TYPE =
+            new ParameterizedTypeReference<>() {};
 
     private final WebClient webClient;
 
@@ -59,5 +63,31 @@ public class AgentRuntimeClient {
                 .retrieve()
                 .bodyToMono(Void.class)
                 .doOnError(e -> log.error("Failed to cancel task {}: {}", taskId, e.getMessage()));
+    }
+
+    /**
+     * Checks whether the given agent is ready to execute for the given user.
+     *
+     * Returns a map with:
+     *   "ready": Boolean — false means task must NOT be created
+     *   "issues": List — structured issue objects each containing type/severity/message/actionUrl
+     *
+     * On HTTP error (Agent Runtime unavailable), returns {"ready": true, "issues": []}
+     * to avoid blocking execution when the readiness service is temporarily unreachable.
+     * The actual execution will fail gracefully if a required resource is unavailable.
+     */
+    public Mono<Map<String, Object>> checkReadiness(UUID agentId, UUID userId, UUID tenantId) {
+        return webClient.get()
+                .uri("/api/v1/agent-readiness/{agentId}", agentId)
+                .header("X-Tenant-Id", tenantId.toString())
+                .header("X-User-Id", userId.toString())
+                .retrieve()
+                .bodyToMono(MAP_TYPE)
+                .onErrorResume(e -> {
+                    log.warn("Readiness check unavailable for agent {}: {}. Proceeding with task creation.",
+                            agentId, e.getMessage());
+                    // Fail-open: readiness check is a best-effort guard, not a hard gate
+                    return Mono.just(Map.of("ready", true, "issues", List.of()));
+                });
     }
 }

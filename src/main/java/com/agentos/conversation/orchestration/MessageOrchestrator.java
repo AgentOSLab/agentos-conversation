@@ -221,52 +221,104 @@ public class MessageOrchestrator {
     }
 
     /**
-     * Agent task: mark run as running, create a Task in Agent Runtime,
-     * link the taskId to the run. Events flow through Redis Pub/Sub → SseAggregator.
-     * No HTTP SSE connection to Agent Runtime — direct Redis subscription.
+     * Agent task: pre-flight readiness check → mark run as running → create Task in Agent Runtime.
+     *
+     * Readiness gate (pre-execution):
+     * If the session is bound to an agent, we check that all required MCP connections
+     * are established and all declared Skills exist before creating the task.
+     * If BLOCKING issues exist, the run is failed immediately with an "agent_not_ready"
+     * SSE event containing the structured issue list — no LLM tokens are wasted.
+     *
+     * Events flow through Redis Pub/Sub → SseAggregator (multi-instance safe).
      */
+    @SuppressWarnings("unchecked")
     private Mono<Void> executeAgentTask(RunEntity run, ConversationSessionEntity session,
                                          RouteDecision route, String content,
                                          UUID tenantId, UUID userId) {
-        return runService.markRunning(run.getId())
-                .then(Mono.defer(() -> {
-                    ContextRequest contextRequest = ContextRequest.builder()
-                            .sessionId(run.getSessionId())
-                            .tenantId(tenantId)
-                            .currentUserMessage(content)
-                            .build();
+        // Pre-flight: check agent readiness only when session is bound to an agent
+        Mono<Boolean> readinessMono = Mono.just(true);
+        if (session.getBoundEntityId() != null) {
+            readinessMono = agentRuntimeClient
+                    .checkReadiness(session.getBoundEntityId(), userId, tenantId)
+                    .flatMap(result -> {
+                        boolean ready = Boolean.TRUE.equals(result.get("ready"));
+                        if (!ready) {
+                            Object issues = result.getOrDefault("issues", List.of());
+                            log.warn("Agent {} not ready for user {} in run {}: issues={}",
+                                    session.getBoundEntityId(), userId, run.getId(), issues);
 
-                    return contextBuilder.buildContext(contextRequest)
-                            .flatMap(assembledCtx -> {
-                                Map<String, Object> ctxUsage = buildContextUsageMap(assembledCtx, false);
+                            Map<String, Object> extra = new LinkedHashMap<>();
+                            extra.put("issues", issues);
+                            extra.put("agentId", session.getBoundEntityId().toString());
 
-                                Map<String, Object> taskRequest = new LinkedHashMap<>();
-                                taskRequest.put("input", Map.of("content", content));
-                                taskRequest.put("sessionId", run.getSessionId().toString());
-                                taskRequest.put("interactionMode", route.getInteractionMode());
-                                taskRequest.put("conversationHistory", assembledCtx.getMessages());
+                            // Publish structured event so frontend can show setup guidance
+                            return sseAggregator.publishEvent(
+                                            run.getId(), run.getSessionId(),
+                                            "agent_not_ready",
+                                            RunEvent.DisplayMetadata.builder()
+                                                    .category("setup")
+                                                    .priority("critical")
+                                                    .summary("Agent requires setup before it can run")
+                                                    .build(),
+                                            extra)
+                                    .then(sseAggregator.publishErrorAndFail(
+                                            run.getId(), run.getSessionId(),
+                                            "AGENT_NOT_READY",
+                                            "Some required resources are not configured. See issues for details."))
+                                    .thenReturn(false);
+                        }
+                        return Mono.just(true);
+                    });
+        }
 
-                                if (session.getBoundEntityId() != null) {
-                                    taskRequest.put("agentId", session.getBoundEntityId().toString());
-                                }
+        return readinessMono.flatMap(ready -> {
+            if (!ready) return Mono.empty(); // run already failed via readiness gate
 
-                                return sseAggregator.publishContextUsage(
-                                                run.getId(), run.getSessionId(), ctxUsage)
-                                        .then(agentRuntimeClient.submitTask(taskRequest, tenantId, userId));
-                            })
-                            .flatMap(taskResponse -> {
-                                String taskIdStr = String.valueOf(taskResponse.get("taskId"));
-                                UUID taskId = UUID.fromString(taskIdStr);
+            return runService.markRunning(run.getId())
+                    .then(Mono.defer(() -> {
+                        // P2-001 fix: do NOT set currentUserMessage here.
+                        // SessionContextBuilder would append the user message to the assembled history,
+                        // but LlmCallStepExecutor ALSO appends it via stepConfig "prompt" →
+                        // the user turn would be duplicated in the LLM context.
+                        // Conversation's job is to assemble the *prior* conversation history;
+                        // Agent Runtime adds the current user instruction as the active turn.
+                        ContextRequest contextRequest = ContextRequest.builder()
+                                .sessionId(run.getSessionId())
+                                .tenantId(tenantId)
+                                .build();
 
-                                return runService.setTaskId(run.getId(), taskId)
-                                        .then(redisTemplate.opsForValue().set(
-                                                "run:task:" + taskId, run.getId().toString(),
-                                                Duration.ofHours(24)))
-                                        .then(sessionService.incrementTaskCount(run.getSessionId()))
-                                        .then(sseAggregator.registerAgentTaskRun(
-                                                run.getId(), taskId, run.getSessionId(), tenantId));
-                            });
-                }));
+                        return contextBuilder.buildContext(contextRequest)
+                                .flatMap(assembledCtx -> {
+                                    Map<String, Object> ctxUsage = buildContextUsageMap(assembledCtx, false);
+
+                                    Map<String, Object> taskRequest = new LinkedHashMap<>();
+                                    taskRequest.put("input", Map.of("content", content));
+                                    taskRequest.put("sessionId", run.getSessionId().toString());
+                                    taskRequest.put("interactionMode", route.getInteractionMode());
+                                    taskRequest.put("conversationHistory", assembledCtx.getMessages());
+
+                                    if (session.getBoundEntityId() != null) {
+                                        taskRequest.put("agentId", session.getBoundEntityId().toString());
+                                    }
+
+                                    return sseAggregator.publishContextUsage(
+                                                    run.getId(), run.getSessionId(), ctxUsage)
+                                            .then(agentRuntimeClient.submitTask(taskRequest, tenantId, userId));
+                                })
+                                .flatMap(taskResponse -> {
+                                    String taskIdStr = String.valueOf(taskResponse.get("taskId"));
+                                    UUID taskId = UUID.fromString(taskIdStr);
+
+                                    return runService.setTaskId(run.getId(), taskId)
+                                            .then(redisTemplate.opsForValue().set(
+                                                    "run:task:" + taskId, run.getId().toString(),
+                                                    Duration.ofHours(24)))
+                                            .then(sessionService.incrementTaskCount(run.getSessionId()))
+                                            .then(sseAggregator.registerAgentTaskRun(
+                                                    run.getId(), taskId, run.getSessionId(), tenantId));
+                                });
+                    }));
+        });
     }
 
     /**

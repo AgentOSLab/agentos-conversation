@@ -29,12 +29,45 @@ public class IntentRouter {
     private static final double COMPLEXITY_THRESHOLD = 0.4;
 
     private static final Set<String> ACTION_KEYWORDS = Set.of(
+            // Core action verbs (EN)
             "create", "build", "deploy", "run", "execute", "generate", "analyze",
             "review", "fix", "update", "delete", "send", "migrate", "convert",
             "calculate", "compare", "extract", "summarize", "translate",
+            // Extended action verbs (EN)
+            "search", "find", "fetch", "read", "write", "save", "load", "export",
+            "import", "upload", "download", "schedule", "book", "reserve",
+            "process", "format", "validate", "test", "debug", "optimize",
+            "refactor", "publish", "list", "query", "filter", "merge", "split",
+            "rename", "move", "copy", "parse", "transform", "monitor", "alert",
+            "notify", "remind", "configure", "setup", "install", "enable", "disable",
+            // Core action verbs (ZH)
             "创建", "构建", "部署", "运行", "执行", "生成", "分析",
             "审查", "修复", "更新", "删除", "发送", "迁移", "转换",
-            "计算", "对比", "提取", "总结", "翻译"
+            "计算", "对比", "提取", "总结", "翻译",
+            // Extended action verbs (ZH)
+            "搜索", "查找", "获取", "读取", "写入", "保存", "导出", "导入",
+            "上传", "下载", "安排", "预订", "处理", "格式化", "验证",
+            "调试", "优化", "发布", "查询", "过滤", "合并", "拆分",
+            "配置", "安装", "启用", "禁用", "监控", "提醒", "通知"
+    );
+
+    /**
+     * Tool-target nouns: when combined with an action verb these raise the score,
+     * indicating a tool-use request (e.g. "send email", "read file", "query database").
+     */
+    private static final Set<String> TOOL_NOUNS = Set.of(
+            // Data / file
+            "file", "email", "calendar", "database", "db", "api", "code",
+            "report", "document", "doc", "spreadsheet", "sheet", "table",
+            "image", "photo", "video", "audio", "pdf", "csv", "json", "xml",
+            // Integration surfaces
+            "slack", "jira", "github", "git", "repo", "repository",
+            "url", "link", "website", "page", "webhook", "server", "service",
+            // Work items
+            "message", "chat", "ticket", "issue", "task", "event", "meeting",
+            // ZH equivalents
+            "文件", "邮件", "日历", "数据库", "代码", "报告", "文档",
+            "表格", "图片", "视频", "链接", "消息", "工单", "任务", "会议"
     );
 
     private static final Pattern GREETING_PATTERN = Pattern.compile(
@@ -96,6 +129,7 @@ public class IntentRouter {
      * Weighted sum of features:
      *   - Message length (short -> simple)
      *   - Action keywords (action verbs -> agent)
+     *   - Tool-noun keywords (tool targets -> raise score when combined with actions)
      *   - Multi-step indicators (sequence words -> agent/workflow)
      *   - Question patterns (pure question -> simple)
      *   - Greeting patterns (greeting -> simple)
@@ -118,6 +152,17 @@ public class IntentRouter {
                 .filter(kw -> lower.contains(kw))
                 .count();
         score += Math.min(actionCount * 0.15, 0.4);
+
+        // Verb+noun tool-use signal: action verb AND a tool noun together → clear tool call intent.
+        // Even a single pairing (e.g. "send email", "read file") is strong evidence of an agent task.
+        if (actionCount > 0) {
+            long toolNounCount = TOOL_NOUNS.stream()
+                    .filter(noun -> lower.contains(noun))
+                    .count();
+            if (toolNounCount > 0) {
+                score += Math.min(toolNounCount * 0.1, 0.2);
+            }
+        }
 
         if (MULTI_STEP_PATTERN.matcher(lower).find()) {
             score += 0.2;
