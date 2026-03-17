@@ -32,10 +32,15 @@ import java.util.*;
  * Context structure (prompt-caching-optimized):
  *   CACHED PREFIX (stable across turns):
  *     system_prompt + agent_persona + execution_mode_rules + tool_definitions
- *     + rag_namespace_schemas + [cache_control: ephemeral]
+ *     + [cache_control: ephemeral]
  *   DYNAMIC SUFFIX (changes each turn):
  *     conversation_summary + recent_messages + pinned_outputs
- *     + rag_results + current_user_input
+ *     + current_user_input
+ *
+ * NOTE (ADR-046): Conversation does NOT perform RAG retrieval.
+ * RAG retrieval happens inside Agent Runtime's RagRetrievalTool during task execution.
+ * The former {@code ragResults} slot in {@link ContextRequest} has been removed to
+ * enforce this boundary at compile time.
  *
  * Token-based windowing: messages are added to the context window until the
  * estimated token count reaches maxTokenBudget. Thinking/reasoning messages
@@ -47,8 +52,10 @@ import java.util.*;
 public class SessionContextBuilder {
 
     private static final String CACHE_PREFIX = "ctx:";
-    private static final Duration CACHE_TTL = Duration.ofMinutes(5);
     private static final Set<String> EXCLUDED_CONTENT_TYPES = Set.of("thinking", "reasoning");
+
+    @Value("${agentos.context.cache-ttl-minutes:5}")
+    private int cacheTtlMinutes;
 
     private final ConversationSessionService sessionService;
     private final ModelContextService modelContextService;
@@ -145,15 +152,6 @@ public class SessionContextBuilder {
                         tokenEstimate += estimateTokens(msg);
                     }
 
-                    if (request.getRagResults() != null && !request.getRagResults().isEmpty()) {
-                        Map<String, Object> ragMsg = Map.of(
-                                "role", "system",
-                                "content", "Retrieved knowledge:\n" + formatRagResults(request.getRagResults())
-                        );
-                        messages.add(ragMsg);
-                        tokenEstimate += estimateTokens(ragMsg);
-                    }
-
                     if (request.getCurrentUserMessage() != null) {
                         messages.add(Map.of(
                                 "role", "user",
@@ -233,7 +231,7 @@ public class SessionContextBuilder {
     private <T> Mono<T> cacheAndReturn(String key, T value) {
         try {
             String json = objectMapper.writeValueAsString(value);
-            return redisTemplate.opsForValue().set(key, json, CACHE_TTL)
+            return redisTemplate.opsForValue().set(key, json, Duration.ofMinutes(cacheTtlMinutes))
                     .thenReturn(value);
         } catch (JsonProcessingException e) {
             log.warn("Failed to cache value for key {}: {}", key, e.getMessage());
@@ -351,16 +349,6 @@ public class SessionContextBuilder {
         return msg;
     }
 
-    private String formatRagResults(List<Map<String, Object>> results) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < results.size(); i++) {
-            Map<String, Object> chunk = results.get(i);
-            sb.append("[").append(i + 1).append("] ");
-            sb.append(chunk.getOrDefault("content", "")).append("\n");
-        }
-        return sb.toString();
-    }
-
     private int estimateTokens(Map<String, Object> message) {
         String content = String.valueOf(message.getOrDefault("content", ""));
         return content.length() / 4;
@@ -379,8 +367,10 @@ public class SessionContextBuilder {
         private String executionModeRules;
         private List<Map<String, Object>> tools;
         private List<Map<String, Object>> conversationHistory;
-        private List<Map<String, Object>> ragResults;
         private String currentUserMessage;
+        // NOTE: ragResults field intentionally absent (ADR-046).
+        // Conversation must not inject RAG results into context; RAG retrieval
+        // is performed by Agent Runtime's RagRetrievalTool during task execution.
     }
 
     @Data

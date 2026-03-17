@@ -54,7 +54,7 @@ agentos:
     agent-runtime-url: ${AGENT_RUNTIME_URL:http://localhost:8004}
     hub-url: ${HUB_URL:http://localhost:8001}
     llm-gateway-url: ${LLM_GATEWAY_URL:http://localhost:8003}
-    rag-url: ${RAG_URL:http://localhost:8010}
+    # rag-url intentionally removed — Conversation must not call RAG directly (ADR-046)
     user-system-url: ${USER_SYSTEM_URL:http://localhost:8006}
   context:
     default-window-size: ${CONTEXT_WINDOW_SIZE:20}

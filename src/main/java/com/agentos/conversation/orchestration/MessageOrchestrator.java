@@ -16,6 +16,7 @@ import com.agentos.conversation.service.ConversationSessionService;
 import com.agentos.conversation.service.RunService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
@@ -48,6 +49,9 @@ public class MessageOrchestrator {
     private final AgentRuntimeClient agentRuntimeClient;
     private final SseAggregator sseAggregator;
     private final ReactiveRedisTemplate<String, String> redisTemplate;
+
+    @Value("${agentos.run.task-run-ttl-hours:24}")
+    private int taskRunTtlHours;
 
     /**
      * Create a Run from a user message, persist the message, route intent,
@@ -312,7 +316,7 @@ public class MessageOrchestrator {
                                     return runService.setTaskId(run.getId(), taskId)
                                             .then(redisTemplate.opsForValue().set(
                                                     "run:task:" + taskId, run.getId().toString(),
-                                                    Duration.ofHours(24)))
+                                                    Duration.ofHours(taskRunTtlHours)))
                                             .then(sessionService.incrementTaskCount(run.getSessionId()))
                                             .then(sseAggregator.registerAgentTaskRun(
                                                     run.getId(), taskId, run.getSessionId(), tenantId));

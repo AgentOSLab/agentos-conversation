@@ -31,7 +31,9 @@ import java.util.function.Consumer;
 public class ConversationSummarizer {
 
     private static final String LOCK_PREFIX = "lock:summarize:";
-    private static final Duration LOCK_TTL = Duration.ofSeconds(90);
+
+    @Value("${agentos.conversation.summarizer-lock-ttl-seconds:90}")
+    private int summarizerLockTtlSeconds;
 
     private final ConversationSessionService sessionService;
     private final LlmGatewayClient llmGatewayClient;
@@ -145,7 +147,7 @@ public class ConversationSummarizer {
     private Mono<Boolean> acquireLock(UUID sessionId) {
         String lockKey = LOCK_PREFIX + sessionId;
         return redisTemplate.opsForValue()
-                .setIfAbsent(lockKey, UUID.randomUUID().toString(), LOCK_TTL)
+                .setIfAbsent(lockKey, UUID.randomUUID().toString(), Duration.ofSeconds(summarizerLockTtlSeconds))
                 .defaultIfEmpty(false);
     }
 
