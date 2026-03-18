@@ -13,7 +13,9 @@ import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import org.springframework.http.codec.ServerSentEvent;
 
 import java.time.OffsetDateTime;
 import java.util.Collections;
@@ -157,7 +159,7 @@ class SessionContractTest {
                 .expectBody()
                 .jsonPath("$.items").isArray()
                 .jsonPath("$.items.length()").isEqualTo(1)
-                .jsonPath("$.total").isEqualTo(1);
+                .jsonPath("$.totalCount").isEqualTo(1);
     }
 
     @Test @Order(6)
@@ -247,7 +249,7 @@ class SessionContractTest {
                 .expectStatus().isOk()
                 .expectBody()
                 .jsonPath("$.items").isArray()
-                .jsonPath("$.total").isEqualTo(0);
+                .jsonPath("$.totalCount").isEqualTo(0);
     }
 
     // ── PATCH /api/v1/sessions/{id}/mcp-tools ─────────────────────────────────
@@ -269,5 +271,84 @@ class SessionContractTest {
                 .expectStatus().isOk()
                 .expectBody()
                 .jsonPath("$.id").isEqualTo(SESSION_ID.toString());
+    }
+
+    // ── POST /api/v1/sessions/{id}/messages (sendMessage) ─────────────────────
+
+    @Test @Order(12)
+    @DisplayName("POST /api/v1/sessions/{id}/messages — 202 Accepted returns RunResponse")
+    void sendMessage_returns202() throws Exception {
+        com.agentos.conversation.model.dto.RunResponse runResponse =
+                com.agentos.conversation.model.dto.RunResponse.builder()
+                        .runId(UUID.fromString("00000000-0000-0000-0000-000000000099"))
+                        .sessionId(SESSION_ID)
+                        .status("routing")
+                        .build();
+
+        when(messageOrchestrator.createAndExecuteRun(eq(TENANT_ID), eq(USER_ID), eq(SESSION_ID), any()))
+                .thenReturn(Mono.just(runResponse));
+
+        Map<String, Object> body = Map.of("content", "Hello, what is the status of JIRA-123?");
+
+        webTestClient.post().uri("/api/v1/sessions/" + SESSION_ID + "/messages")
+                .header("X-Tenant-Id", TENANT_ID.toString())
+                .header("X-User-Id", USER_ID.toString())
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(objectMapper.writeValueAsString(body))
+                .exchange()
+                .expectStatus().isAccepted()
+                .expectBody()
+                .jsonPath("$.runId").isEqualTo("00000000-0000-0000-0000-000000000099")
+                .jsonPath("$.sessionId").isEqualTo(SESSION_ID.toString())
+                .jsonPath("$.status").isEqualTo("routing");
+    }
+
+    @Test @Order(13)
+    @DisplayName("POST /api/v1/sessions/{id}/messages — 400 Bad Request when content is blank")
+    void sendMessage_blankContent_returns400() throws Exception {
+        Map<String, Object> body = Map.of("content", "");
+
+        webTestClient.post().uri("/api/v1/sessions/" + SESSION_ID + "/messages")
+                .header("X-Tenant-Id", TENANT_ID.toString())
+                .header("X-User-Id", USER_ID.toString())
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(objectMapper.writeValueAsString(body))
+                .exchange()
+                .expectStatus().isBadRequest();
+    }
+
+    // ── GET /api/v1/sessions/{id}/events (session SSE stream) ─────────────────
+
+    @Test @Order(14)
+    @DisplayName("GET /api/v1/sessions/{id}/events — 200 OK returns SSE stream")
+    void streamSessionEvents_returns200() {
+        ServerSentEvent<String> event = ServerSentEvent.<String>builder()
+                .id("evt-1")
+                .event("step.completed")
+                .data("{\"stepId\":\"step1\"}")
+                .build();
+
+        when(messageOrchestrator.streamSessionEvents(SESSION_ID))
+                .thenReturn(Flux.just(event));
+
+        webTestClient.get()
+                .uri("/api/v1/sessions/" + SESSION_ID + "/events")
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM);
+    }
+
+    @Test @Order(15)
+    @DisplayName("GET /api/v1/sessions/{id}/events — 200 OK with empty stream when no events pending")
+    void streamSessionEvents_emptyStream_returns200() {
+        when(messageOrchestrator.streamSessionEvents(SESSION_ID))
+                .thenReturn(Flux.empty());
+
+        webTestClient.get()
+                .uri("/api/v1/sessions/" + SESSION_ID + "/events")
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .exchange()
+                .expectStatus().isOk();
     }
 }
