@@ -73,4 +73,34 @@ public interface ConversationSessionRepository extends ReactiveCrudRepository<Co
             WHERE id = :sessionId
             """)
     Mono<Void> updateSummary(UUID sessionId, String summary, OffsetDateTime now);
+
+    /**
+     * Find active sessions whose last activity predates the given cutoff,
+     * used by the nightly session archival job.
+     */
+    @Query("""
+            SELECT * FROM conversation_sessions
+            WHERE status = 'active'
+              AND last_activity_at < :cutoff
+            ORDER BY last_activity_at ASC
+            LIMIT :limit
+            """)
+    Flux<ConversationSessionEntity> findActiveSessionsOlderThan(OffsetDateTime cutoff, int limit);
+
+    /**
+     * Fetch up to {@code limit} non-empty conversation summaries for a user,
+     * excluding the current session, ordered by most recent activity.
+     * Used to inject cross-session memory context.
+     */
+    @Query("""
+            SELECT conversation_summary FROM conversation_sessions
+            WHERE tenant_id = :tenantId
+              AND user_id = :userId
+              AND id != :excludeSessionId
+              AND conversation_summary IS NOT NULL
+              AND conversation_summary != ''
+            ORDER BY last_activity_at DESC
+            LIMIT :limit
+            """)
+    Flux<String> findRecentSummaries(UUID tenantId, UUID userId, UUID excludeSessionId, int limit);
 }

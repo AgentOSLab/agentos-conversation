@@ -7,13 +7,18 @@ import com.agentos.conversation.repository.ConversationMessageRepository;
 import com.agentos.conversation.repository.ConversationSessionRepository;
 import com.agentos.common.model.PageResponse;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -23,8 +28,21 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class ConversationSessionService {
 
+    /** Redis list key prefix for the per-session sliding message window. */
+    private static final String SESSION_MSGS_KEY = "session:msgs:";
+
+    /** Context-builder cache key prefix — invalidated on every message append. */
+    private static final String CTX_RECENT_KEY = "ctx:recent:";
+
+    @Value("${agentos.session.message-window-size:50}")
+    private int messageWindowSize;
+
+    @Value("${agentos.session.message-window-ttl-days:7}")
+    private int messageWindowTtlDays;
+
     private final ConversationSessionRepository sessionRepository;
     private final ConversationMessageRepository messageRepository;
+    private final ReactiveStringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 
     public Mono<ConversationSessionEntity> createSession(UUID tenantId, UUID userId, CreateSessionRequest request) {
@@ -83,19 +101,81 @@ public class ConversationSessionService {
                 });
     }
 
+    /**
+     * Persist a new message to the DB, push it to the Redis sliding window list,
+     * and invalidate the context-builder's read-through cache so the next
+     * context assembly always sees fresh data.
+     *
+     * Redis list key: {@code session:msgs:{sessionId}}
+     * Window size:    {@code agentos.session.message-window-size} (default 50)
+     * TTL:            {@code agentos.session.message-window-ttl-days} (default 7 days)
+     */
     public Mono<ConversationMessageEntity> appendMessage(UUID sessionId, ConversationMessageEntity message) {
         message.setSessionId(sessionId);
         return messageRepository.save(message)
-                .flatMap(saved -> sessionRepository.incrementMessageCount(sessionId, OffsetDateTime.now())
-                        .thenReturn(saved));
+                .flatMap(saved ->
+                        sessionRepository.incrementMessageCount(sessionId, OffsetDateTime.now())
+                                .then(pushToRedisWindow(sessionId, saved))
+                                .thenReturn(saved));
     }
 
+    /**
+     * Push the serialized message to the right end of the Redis list,
+     * trim the list to the configured window size, refresh the TTL,
+     * and invalidate the context-builder's separate read-through cache entry.
+     * Errors are logged and suppressed so a Redis failure never blocks message persistence.
+     */
+    private Mono<Void> pushToRedisWindow(UUID sessionId, ConversationMessageEntity saved) {
+        String listKey = SESSION_MSGS_KEY + sessionId;
+        String ctxKey  = CTX_RECENT_KEY + sessionId;
+        try {
+            String json = objectMapper.writeValueAsString(saved);
+            return redisTemplate.opsForList().rightPush(listKey, json)
+                    .flatMap(size -> redisTemplate.opsForList().trim(listKey, -messageWindowSize, -1))
+                    .then(redisTemplate.expire(listKey, Duration.ofDays(messageWindowTtlDays)))
+                    .then(redisTemplate.delete(ctxKey))
+                    .then()
+                    .onErrorResume(e -> {
+                        log.warn("Redis window push failed for session {}: {}", sessionId, e.getMessage());
+                        return Mono.empty();
+                    });
+        } catch (JsonProcessingException e) {
+            log.warn("Failed to serialize message for Redis window, session {}: {}", sessionId, e.getMessage());
+            return Mono.empty();
+        }
+    }
+
+    /**
+     * Returns the most recent {@code limit} messages for the session in chronological order.
+     *
+     * Read path:
+     *   1. Redis sliding window list ({@code session:msgs:{sessionId}}) — O(1) tail read, no DB hit
+     *   2. PostgreSQL fallback if the Redis list is absent or deserialization fails
+     */
     public Mono<List<ConversationMessageEntity>> getRecentMessages(UUID sessionId, int limit) {
-        return messageRepository.findRecentBySession(sessionId, limit)
+        String listKey = SESSION_MSGS_KEY + sessionId;
+        return redisTemplate.opsForList().range(listKey, -limit, -1)
                 .collectList()
-                .map(msgs -> {
-                    java.util.Collections.reverse(msgs);
-                    return msgs;
+                .flatMap(jsonList -> {
+                    if (!jsonList.isEmpty()) {
+                        try {
+                            List<ConversationMessageEntity> messages = new ArrayList<>(jsonList.size());
+                            for (String json : jsonList) {
+                                messages.add(objectMapper.readValue(json, ConversationMessageEntity.class));
+                            }
+                            log.debug("Redis window hit: {} messages for session {}", messages.size(), sessionId);
+                            return Mono.just(messages);
+                        } catch (Exception e) {
+                            log.debug("Redis window deserialization failed for session {}, falling back to DB", sessionId);
+                        }
+                    }
+                    // DB fallback: findRecentBySession returns newest-first, so reverse for chronological order
+                    return messageRepository.findRecentBySession(sessionId, limit)
+                            .collectList()
+                            .map(msgs -> {
+                                java.util.Collections.reverse(msgs);
+                                return msgs;
+                            });
                 });
     }
 
@@ -133,6 +213,16 @@ public class ConversationSessionService {
 
     public Mono<ConversationMessageEntity> getMessageById(UUID messageId) {
         return messageRepository.findById(messageId);
+    }
+
+    /**
+     * Returns summaries from the user's most-recently-active sessions (excluding the current one),
+     * for cross-session memory context injection.
+     */
+    public Mono<List<String>> getPastSessionSummaries(UUID tenantId, UUID userId,
+                                                       UUID excludeSessionId, int limit) {
+        return sessionRepository.findRecentSummaries(tenantId, userId, excludeSessionId, limit)
+                .collectList();
     }
 
     private String toJson(Map<String, Object> map) {

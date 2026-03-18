@@ -1,13 +1,17 @@
 package com.agentos.conversation.api;
 
 import com.agentos.conversation.model.dto.*;
+import com.agentos.conversation.orchestration.MessageOrchestrator;
 import com.agentos.conversation.service.ConversationSessionService;
 import com.agentos.common.model.PageResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.Map;
@@ -19,6 +23,7 @@ import java.util.UUID;
 public class ConversationSessionController {
 
     private final ConversationSessionService sessionService;
+    private final MessageOrchestrator messageOrchestrator;
 
     @PostMapping
     public Mono<ResponseEntity<ConversationSessionResponse>> createSession(
@@ -102,6 +107,22 @@ public class ConversationSessionController {
                 .defaultIfEmpty(ResponseEntity.notFound().build());
     }
 
+    @PostMapping("/{sessionId}/messages")
+    public Mono<ResponseEntity<RunResponse>> sendMessage(
+            @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestHeader("X-User-Id") UUID userId,
+            @PathVariable UUID sessionId,
+            @Valid @RequestBody SendMessageRequest request) {
+
+        CreateRunRequest runRequest = CreateRunRequest.builder()
+                .content(request.getContent())
+                .attachments(request.getAttachments())
+                .build();
+
+        return messageOrchestrator.createAndExecuteRun(tenantId, userId, sessionId, runRequest)
+                .map(run -> ResponseEntity.status(HttpStatus.ACCEPTED).body(run));
+    }
+
     @GetMapping("/{sessionId}/messages")
     public Mono<ResponseEntity<PageResponse<ConversationMessageResponse>>> getMessages(
             @PathVariable UUID sessionId,
@@ -121,5 +142,16 @@ public class ConversationSessionController {
 
         return sessionService.pinMessage(messageId, pinned)
                 .then(Mono.just(ResponseEntity.ok().<Void>build()));
+    }
+
+    /**
+     * Session-level SSE stream. Delivers a multiplexed view of every run event within this session.
+     * Clients subscribe once and receive events from all current and future runs in the session.
+     */
+    @GetMapping(value = "/{sessionId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> streamSessionEvents(
+            @PathVariable UUID sessionId) {
+
+        return messageOrchestrator.streamSessionEvents(sessionId);
     }
 }

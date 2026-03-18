@@ -80,6 +80,17 @@ public class MessageOrchestrator {
 
                                             kickOffExecution(run, session, route, request.getContent(), tenantId, userId);
 
+                                            // Auto-generate session title on first user message (fire-and-forget)
+                                            if (session.getMessageCount() == 0
+                                                    && (session.getTitle() == null || session.getTitle().isBlank())) {
+                                                generateSessionTitle(sessionId, tenantId, request.getContent())
+                                                        .subscribe(
+                                                                v -> {},
+                                                                e -> log.warn("Auto-title generation failed for session {}: {}",
+                                                                        sessionId, e.getMessage())
+                                                        );
+                                            }
+
                                             return Mono.just(RunResponse.fromEntity(run));
                                         });
                             });
@@ -313,10 +324,18 @@ public class MessageOrchestrator {
                                     String taskIdStr = String.valueOf(taskResponse.get("taskId"));
                                     UUID taskId = UUID.fromString(taskIdStr);
 
+                                    Duration taskTtl = Duration.ofHours(taskRunTtlHours);
                                     return runService.setTaskId(run.getId(), taskId)
                                             .then(redisTemplate.opsForValue().set(
-                                                    "run:task:" + taskId, run.getId().toString(),
-                                                    Duration.ofHours(taskRunTtlHours)))
+                                                    "run:task:" + taskId, run.getId().toString(), taskTtl))
+                                            // Store session + tenant mappings so RunStatusSyncService
+                                            // can trigger summarization on task completion (Phase 5)
+                                            .then(redisTemplate.opsForValue().set(
+                                                    "run:task:" + taskId + ":session",
+                                                    run.getSessionId().toString(), taskTtl))
+                                            .then(redisTemplate.opsForValue().set(
+                                                    "run:task:" + taskId + ":tenant",
+                                                    tenantId.toString(), taskTtl))
                                             .then(sessionService.incrementTaskCount(run.getSessionId()))
                                             .then(sseAggregator.registerAgentTaskRun(
                                                     run.getId(), taskId, run.getSessionId(), tenantId));
@@ -333,6 +352,15 @@ public class MessageOrchestrator {
                                                           UUID tenantId, UUID userId,
                                                           String lastEventId) {
         return sseAggregator.streamRunEvents(runId, sessionId, tenantId, userId, lastEventId);
+    }
+
+    /**
+     * Stream SSE events for a Session. Delivers a multiplexed stream of all run events
+     * within this session so the client needs only one long-lived connection.
+     * Any instance can serve this — events are mirrored to a Redis session channel.
+     */
+    public Flux<ServerSentEvent<String>> streamSessionEvents(UUID sessionId) {
+        return sseAggregator.streamSessionEvents(sessionId);
     }
 
     /**
@@ -446,5 +474,51 @@ public class MessageOrchestrator {
             case "workflow" -> RouteType.WORKFLOW;
             default -> RouteType.AGENT_TASK;
         };
+    }
+
+    /**
+     * Fire a non-streaming LLM call to generate a short title from the first user message,
+     * then persist it on the session. Designed to be called fire-and-forget.
+     */
+    private Mono<Void> generateSessionTitle(UUID sessionId, UUID tenantId, String firstMessage) {
+        List<Map<String, Object>> messages = List.of(
+                Map.of("role", "system", "content",
+                        "Generate a short, descriptive title (maximum 60 characters) for a conversation that starts with the following user message. Return only the title text, no quotes, no punctuation at the end."),
+                Map.of("role", "user", "content", firstMessage)
+        );
+
+        return llmGatewayClient.chatCompletion(messages, null, tenantId)
+                .flatMap(response -> {
+                    String raw = extractChatContent(response);
+                    if (raw != null && !raw.isBlank()) {
+                        String title = raw.strip().replaceAll("^\"|\"$", "");
+                        if (title.length() > 60) {
+                            title = title.substring(0, 60);
+                        }
+                        log.debug("Auto-generated title for session {}: \"{}\"", sessionId, title);
+                        return sessionService.updateTitle(tenantId, sessionId, title).then();
+                    }
+                    return Mono.empty();
+                })
+                .onErrorResume(e -> {
+                    log.warn("Auto-title generation failed for session {}: {}", sessionId, e.getMessage());
+                    return Mono.empty();
+                });
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extractChatContent(Map<String, Object> response) {
+        try {
+            List<Map<String, Object>> choices = (List<Map<String, Object>>) response.get("choices");
+            if (choices != null && !choices.isEmpty()) {
+                Map<String, Object> message = (Map<String, Object>) choices.get(0).get("message");
+                if (message != null) {
+                    return (String) message.get("content");
+                }
+            }
+        } catch (Exception e) {
+            log.trace("Failed to extract chat content from LLM response: {}", e.getMessage());
+        }
+        return null;
     }
 }

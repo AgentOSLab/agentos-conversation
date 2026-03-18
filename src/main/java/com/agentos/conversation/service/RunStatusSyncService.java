@@ -1,5 +1,6 @@
 package com.agentos.conversation.service;
 
+import com.agentos.conversation.context.ConversationSummarizer;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
@@ -30,6 +31,7 @@ public class RunStatusSyncService {
 
     private final ReactiveRedisTemplate<String, String> redisTemplate;
     private final RunService runService;
+    private final ConversationSummarizer summarizer;
     private final ObjectMapper objectMapper;
 
     @PostConstruct
@@ -55,7 +57,9 @@ public class RunStatusSyncService {
             switch (eventType) {
                 case "task.completed" -> {
                     log.info("Task completed, syncing run status: taskId={}", taskId);
-                    syncRunStatus(taskId, "completed").subscribe();
+                    syncRunStatus(taskId, "completed")
+                            .then(triggerSummarizationForTask(taskId))
+                            .subscribe();
                 }
                 case "task.failed" -> {
                     String errorCode = (String) event.getOrDefault("errorCode", "UNKNOWN");
@@ -98,6 +102,41 @@ public class RunStatusSyncService {
                 })
                 .doOnError(e -> log.warn("Failed to fail run for task {}: {}",
                         taskId, e.getMessage()))
+                .onErrorResume(e -> Mono.empty());
+    }
+
+    /**
+     * After an agent task completes, retrieve the session and tenant from Redis
+     * (stored by MessageOrchestrator when the task was created) and trigger
+     * ConversationSummarizer.summarizeIfNeeded so that long agent-task conversations
+     * are summarized at the same cadence as simple-chat conversations.
+     *
+     * Keys written by MessageOrchestrator:
+     *   run:task:{taskId}:session → sessionId
+     *   run:task:{taskId}:tenant  → tenantId
+     */
+    private Mono<Void> triggerSummarizationForTask(String taskId) {
+        String sessionKey = "run:task:" + taskId + ":session";
+        String tenantKey  = "run:task:" + taskId + ":tenant";
+
+        return Mono.zip(
+                        redisTemplate.opsForValue().get(sessionKey).defaultIfEmpty(""),
+                        redisTemplate.opsForValue().get(tenantKey).defaultIfEmpty("")
+                )
+                .flatMap(tuple -> {
+                    String sessionIdStr = tuple.getT1();
+                    String tenantIdStr  = tuple.getT2();
+                    if (sessionIdStr.isBlank() || tenantIdStr.isBlank()) {
+                        log.debug("No session/tenant mapping for taskId={}, skipping summarization", taskId);
+                        return Mono.empty();
+                    }
+                    UUID sessionId = UUID.fromString(sessionIdStr);
+                    UUID tenantId  = UUID.fromString(tenantIdStr);
+                    log.debug("Triggering summarization after task completion: taskId={}, sessionId={}",
+                            taskId, sessionId);
+                    return summarizer.summarizeIfNeeded(sessionId, tenantId);
+                })
+                .doOnError(e -> log.warn("Summarization trigger failed for taskId={}: {}", taskId, e.getMessage()))
                 .onErrorResume(e -> Mono.empty());
     }
 }

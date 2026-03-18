@@ -71,6 +71,10 @@ public class SessionContextBuilder {
     @Value("${agentos.context.pinned-messages-limit:10}")
     private int pinnedMessagesLimit;
 
+    /** Number of past session summaries to inject as cross-session memory (0 = disabled). */
+    @Value("${agentos.context.cross-session-memory-limit:3}")
+    private int crossSessionMemoryLimit;
+
     @Value("${agentos.context.tool-output-max-chars:2000}")
     private int toolOutputMaxChars;
 
@@ -105,13 +109,18 @@ public class SessionContextBuilder {
         Mono<List<ConversationMessageEntity>> pinnedMono = getCachedPinnedMessages(sessionId);
         Mono<String> summaryMono = getCachedSummary(sessionId, session.getConversationSummary());
         Mono<Integer> contextWindowMono = modelContextService.getContextWindow(request.getTenantId());
+        Mono<List<String>> pastSummariesMono = crossSessionMemoryLimit > 0
+                ? sessionService.getPastSessionSummaries(
+                        session.getTenantId(), session.getUserId(), sessionId, crossSessionMemoryLimit)
+                : Mono.just(List.of());
 
-        return Mono.zip(recentMono, pinnedMono, summaryMono, contextWindowMono)
+        return Mono.zip(recentMono, pinnedMono, summaryMono, contextWindowMono, pastSummariesMono)
                 .map(tuple -> {
                     List<ConversationMessageEntity> recentMessages = tuple.getT1();
                     List<ConversationMessageEntity> pinnedMessages = tuple.getT2();
                     String summary = tuple.getT3();
                     int contextWindow = tuple.getT4();
+                    List<String> pastSummaries = tuple.getT5();
 
                     int effectiveBudget = Math.min(contextWindow, maxTokenBudget);
 
@@ -122,6 +131,23 @@ public class SessionContextBuilder {
                     systemMessage.put("cache_control", Map.of("type", "ephemeral"));
                     messages.add(systemMessage);
                     tokenEstimate += estimateTokens(systemMessage);
+
+                    // Cross-session memory: inject summaries from the user's recent past sessions
+                    // so the agent retains awareness of prior context without re-loading full history.
+                    if (!pastSummaries.isEmpty()) {
+                        StringBuilder memoryBlock = new StringBuilder(
+                                "Memory from previous conversations (most recent first):\n");
+                        for (int i = 0; i < pastSummaries.size(); i++) {
+                            memoryBlock.append("Session ").append(i + 1).append(": ")
+                                    .append(pastSummaries.get(i)).append("\n");
+                        }
+                        Map<String, Object> memoryMsg = Map.of(
+                                "role", "system",
+                                "content", memoryBlock.toString().strip()
+                        );
+                        messages.add(memoryMsg);
+                        tokenEstimate += estimateTokens(memoryMsg);
+                    }
 
                     if (summary != null && !summary.isBlank()) {
                         Map<String, Object> summaryMsg = Map.of(

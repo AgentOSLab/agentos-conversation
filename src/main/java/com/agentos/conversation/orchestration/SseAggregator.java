@@ -47,6 +47,8 @@ public class SseAggregator {
     private static final String EVENT_SEQ_PREFIX = "run_seq:";
     private static final String EVENT_CHANNEL_PREFIX = "run_channel:";
     private static final String RUN_META_PREFIX = "run_meta:";
+    /** Session-level Pub/Sub channel — mirrors all run events for a session. */
+    private static final String SESSION_CHANNEL_PREFIX = "session_channel:";
 
     /**
      * TTL for the Redis event buffer Sorted Set (and associated metadata keys).
@@ -278,6 +280,27 @@ public class SseAggregator {
                 .doOnCancel(() -> log.debug("SSE client disconnected for run {}", runId));
     }
 
+    /**
+     * Stream SSE events for a session. Subscribes to the session-level Redis Pub/Sub channel,
+     * which receives a mirror of every run event published within this session.
+     * This allows a single long-lived SSE connection to track all runs in the session
+     * without reconnecting for each new run.
+     */
+    public Flux<ServerSentEvent<String>> streamSessionEvents(UUID sessionId) {
+        String channel = SESSION_CHANNEL_PREFIX + sessionId;
+
+        return redisTemplate.listenTo(ChannelTopic.of(channel))
+                .map(ReactiveSubscription.Message::getMessage)
+                .mapNotNull(this::deserializeEvent)
+                .map(event -> ServerSentEvent.<String>builder()
+                        .id(event.getEventId())
+                        .event(event.getType())
+                        .data(toJson(event))
+                        .build())
+                .doOnSubscribe(s -> log.debug("Session SSE stream opened for session {}", sessionId))
+                .doOnCancel(() -> log.debug("Session SSE client disconnected for session {}", sessionId));
+    }
+
     // ─────────────── Agent Runtime Event Normalization ───────────────
 
     @SuppressWarnings("unchecked")
@@ -454,11 +477,19 @@ public class SseAggregator {
         String bufferKey = EVENT_BUFFER_PREFIX + runId;
         String channelKey = EVENT_CHANNEL_PREFIX + runId;
 
-        return redisTemplate.opsForZSet().add(bufferKey, json, seq)
+        Mono<Void> publish = redisTemplate.opsForZSet().add(bufferKey, json, seq)
                 .then(redisTemplate.expire(bufferKey, Duration.ofMinutes(eventBufferTtlMinutes)))
                 .then(redisTemplate.convertAndSend(channelKey, json))
                 .then(runService.updateLastEventId(runId, event.getEventId()))
                 .then();
+
+        // Mirror to the session-level channel so session SSE subscribers receive all run events
+        if (event.getSessionId() != null) {
+            String sessionChannelKey = SESSION_CHANNEL_PREFIX + event.getSessionId();
+            publish = publish.then(redisTemplate.convertAndSend(sessionChannelKey, json).then());
+        }
+
+        return publish;
     }
 
     private Flux<RunEvent> replayFromRedis(UUID runId, long afterSeq) {
