@@ -134,7 +134,7 @@ public class RunStatusSyncService {
                     UUID tenantId  = UUID.fromString(tenantIdStr);
                     log.debug("Triggering summarization after task completion: taskId={}, sessionId={}",
                             taskId, sessionId);
-                    return summarizer.summarizeIfNeeded(sessionId, tenantId);
+                    return summarizer.summarizeIfNeeded(sessionId, tenantId).then();
                 })
                 .doOnError(e -> log.warn("Summarization trigger failed for taskId={}: {}", taskId, e.getMessage()))
                 .onErrorResume(e -> Mono.empty());

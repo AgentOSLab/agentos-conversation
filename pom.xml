@@ -30,6 +30,13 @@
             <version>0.1.0-SNAPSHOT</version>
         </dependency>
 
+        <!-- AgentOS Runtime Core — platform tools framework -->
+        <dependency>
+            <groupId>com.agentos</groupId>
+            <artifactId>agentos-runtime-core</artifactId>
+            <version>0.1.0-SNAPSHOT</version>
+        </dependency>
+
         <!-- JWT verification -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>

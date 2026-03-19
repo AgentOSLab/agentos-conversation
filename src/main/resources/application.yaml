@@ -6,13 +6,13 @@ spring:
     name: agentos-conversation
 
   r2dbc:
-    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5435}/${DB_NAME:agentos_conversation}
+    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:agentos_conversation}
     username: ${DB_USERNAME:agentos}
     password: ${DB_PASSWORD:agentos}
 
   flyway:
     enabled: true
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5435}/${DB_NAME:agentos_conversation}
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:agentos_conversation}
     user: ${DB_USERNAME:agentos}
     password: ${DB_PASSWORD:agentos}
     locations: classpath:db/migration
@@ -42,6 +42,10 @@ logging:
     com.agentos.conversation: DEBUG
 
 agentos:
+  service-auth:
+    identity: conversation
+    shared-secret: ${SERVICE_AUTH_SECRET:changeme-dev-secret-32-chars-min!!}
+
   security:
     jwt:
       secret: ${JWT_SECRET:}
@@ -54,7 +58,11 @@ agentos:
     agent-runtime-url: ${AGENT_RUNTIME_URL:http://localhost:8004}
     hub-url: ${HUB_URL:http://localhost:8001}
     llm-gateway-url: ${LLM_GATEWAY_URL:http://localhost:8003}
-    # rag-url intentionally removed — Conversation must not call RAG directly (ADR-046)
+    # NOTE: ADR-046 prohibits Conversation from injecting RAG results into context
+    # during assembly. However, platform tools (search_knowledge) are LLM-driven
+    # tool calls, not automatic context pre-population — this is allowed.
+    rag:
+      base-url: ${RAG_URL:http://localhost:8010}
     user-system-url: ${USER_SYSTEM_URL:http://localhost:8006}
   context:
     default-window-size: ${CONTEXT_WINDOW_SIZE:20}
@@ -62,6 +70,13 @@ agentos:
     pinned-messages-limit: ${CONTEXT_PINNED_LIMIT:10}
     summarization-trigger: ${CONTEXT_SUMMARIZATION_TRIGGER:30}
     tool-output-max-chars: ${CONTEXT_TOOL_OUTPUT_MAX_CHARS:2000}
+  platform-tools:
+    web-search:
+      api-url: ${WEB_SEARCH_API_URL:}
+      api-key: ${WEB_SEARCH_API_KEY:}
+      provider: ${WEB_SEARCH_PROVIDER:brave}
+    fetch-url:
+      max-chars: ${FETCH_URL_MAX_CHARS:10000}
   sse:
     # SSE event buffer TTL in Redis. Must exceed the longest expected agent task
     # execution time to allow clients to replay missed events on reconnect.

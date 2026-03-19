@@ -12,8 +12,15 @@ import com.agentos.conversation.model.entity.ConversationSessionEntity;
 import com.agentos.conversation.model.entity.RunEntity;
 import com.agentos.conversation.orchestration.IntentRouter.RouteDecision;
 import com.agentos.conversation.orchestration.IntentRouter.RouteType;
+import com.agentos.conversation.platform.ConversationPlatformToolConfig;
 import com.agentos.conversation.service.ConversationSessionService;
 import com.agentos.conversation.service.RunService;
+import com.agentos.runtime.core.platform.PlatformToolContext;
+import com.agentos.runtime.core.platform.PlatformToolDefinition;
+import com.agentos.runtime.core.platform.PlatformToolDispatcher;
+import com.agentos.runtime.core.platform.PlatformToolRegistry;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -49,6 +56,11 @@ public class MessageOrchestrator {
     private final AgentRuntimeClient agentRuntimeClient;
     private final SseAggregator sseAggregator;
     private final ReactiveRedisTemplate<String, String> redisTemplate;
+    private final PlatformToolDispatcher conversationPlatformToolDispatcher;
+    private final ObjectMapper objectMapper;
+
+    private static final int MAX_TOOL_ITERATIONS = 10;
+    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
     @Value("${agentos.run.task-run-ttl-hours:24}")
     private int taskRunTtlHours;
@@ -124,8 +136,15 @@ public class MessageOrchestrator {
     }
 
     /**
-     * Simple chat: mark run as running, assemble context, stream LLM response
-     * token-by-token via Redis-backed SSE, persist final assistant message, complete run.
+     * Simple chat: mark run as running, assemble context, call LLM with platform tools.
+     *
+     * <p>Supports a tool-call loop: if the LLM requests tool calls (web_search,
+     * search_knowledge, etc.), we execute them and re-submit to the LLM.
+     * The final text response is streamed token-by-token via SSE.
+     *
+     * <p>Tool-call loop uses non-streaming; only the final text response uses streaming.
+     * This avoids the complexity of parsing tool_call deltas from a stream while still
+     * giving the user a progressive text display for the answer.
      */
     @SuppressWarnings("unchecked")
     private Mono<Void> executeSimpleChat(RunEntity run, ConversationSessionEntity session,
@@ -145,6 +164,9 @@ public class MessageOrchestrator {
 
                                 Map<String, Object> ctxUsage = buildContextUsageMap(ctx, false);
 
+                                // Build platform tool schemas for direct chat
+                                List<Map<String, Object>> platformTools = buildDirectChatTools();
+
                                 return sseAggregator.publishEvent(runId, sessionId, "run_started",
                                                 RunEvent.DisplayMetadata.builder()
                                                         .category("execution").priority("important")
@@ -152,41 +174,181 @@ public class MessageOrchestrator {
                                         .then(sseAggregator.publishContextUsage(runId, sessionId, ctxUsage))
                                         .then(sseAggregator.publishMessageStarted(runId, sessionId))
                                         .then(Mono.defer(() -> {
-                                            StringBuilder fullContent = new StringBuilder();
-                                            AtomicInteger tokenIndex = new AtomicInteger(0);
-
-                                            return llmGatewayClient.chatCompletionStream(
-                                                            ctx.getMessages(), ctx.getTools(), tenantId)
-                                                    .concatMap(chunk -> {
-                                                        String tokenContent = extractStreamToken(chunk);
-                                                        String thinkingContent = extractStreamThinking(chunk);
-
-                                                        Mono<Void> ops = Mono.empty();
-                                                        if (thinkingContent != null && !thinkingContent.isEmpty()) {
-                                                            ops = ops.then(sseAggregator.publishThinking(
-                                                                    runId, sessionId, thinkingContent));
-                                                        }
-                                                        if (tokenContent != null && !tokenContent.isEmpty()) {
-                                                            fullContent.append(tokenContent);
-                                                            ops = ops.then(sseAggregator.publishToken(
-                                                                    runId, sessionId, tokenContent,
-                                                                    tokenIndex.getAndIncrement()));
-                                                        }
-                                                        return ops;
-                                                    })
-                                                    .then()
-                                                    .flatMap(v -> persistAndFinalize(run, fullContent.toString()))
-                                                    .onErrorResume(e -> {
-                                                        log.error("LLM streaming failed for run {}: {}", runId, e.getMessage());
-                                                        return sseAggregator.publishErrorAndFail(
-                                                                runId, sessionId, "llm_streaming_error", e.getMessage());
-                                                    });
-                                        }));
+                                            if (platformTools.isEmpty()) {
+                                                return streamPureLlmResponse(run, ctx, tenantId);
+                                            }
+                                            return executeToolCallLoop(run, ctx, platformTools, tenantId)
+                                                    .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+                                        }))
+                                        .onErrorResume(e -> {
+                                            log.error("Simple chat failed for run {}: {}", runId, e.getMessage());
+                                            return sseAggregator.publishErrorAndFail(
+                                                    runId, sessionId, "simple_chat_error", e.getMessage());
+                                        });
                             });
                 }))
                 .then(Mono.defer(() ->
                         summarizer.summarizeIfNeeded(run.getSessionId(), tenantId)))
                 .then();
+    }
+
+    /**
+     * Pure streaming path — no tools, direct LLM stream. Original simple chat behavior.
+     */
+    private Mono<Void> streamPureLlmResponse(RunEntity run, AssembledContext ctx, UUID tenantId) {
+        UUID runId = run.getId();
+        UUID sessionId = run.getSessionId();
+        StringBuilder fullContent = new StringBuilder();
+        AtomicInteger tokenIndex = new AtomicInteger(0);
+
+        return llmGatewayClient.chatCompletionStream(ctx.getMessages(), ctx.getTools(), tenantId)
+                .concatMap(chunk -> {
+                    String tokenContent = extractStreamToken(chunk);
+                    String thinkingContent = extractStreamThinking(chunk);
+
+                    Mono<Void> ops = Mono.empty();
+                    if (thinkingContent != null && !thinkingContent.isEmpty()) {
+                        ops = ops.then(sseAggregator.publishThinking(runId, sessionId, thinkingContent));
+                    }
+                    if (tokenContent != null && !tokenContent.isEmpty()) {
+                        fullContent.append(tokenContent);
+                        ops = ops.then(sseAggregator.publishToken(
+                                runId, sessionId, tokenContent, tokenIndex.getAndIncrement()));
+                    }
+                    return ops;
+                })
+                .then()
+                .flatMap(v -> persistAndFinalize(run, fullContent.toString()));
+    }
+
+    /**
+     * Tool-call loop: call LLM non-streaming → execute tool calls → repeat.
+     * Final text response is emitted as token events for streaming UX.
+     */
+    private Mono<Void> executeToolCallLoop(RunEntity run, AssembledContext ctx,
+                                            List<Map<String, Object>> platformTools, UUID tenantId) {
+        UUID runId = run.getId();
+        UUID sessionId = run.getSessionId();
+
+        PlatformToolContext toolCtx = PlatformToolContext.builder()
+                .taskId(runId)
+                .tenantId(tenantId)
+                .callerRuntime("conversation")
+                .build();
+
+        List<Map<String, Object>> messages = new ArrayList<>(ctx.getMessages());
+
+        return Mono.fromCallable(() -> {
+            String finalContent = null;
+
+            for (int iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+                Map<String, Object> response = llmGatewayClient
+                        .chatCompletion(messages, platformTools, tenantId).block();
+
+                if (response == null) {
+                    return "";
+                }
+
+                String content = extractChatContent(response);
+                List<Map<String, Object>> toolCalls = extractToolCalls(response);
+
+                if (toolCalls == null || toolCalls.isEmpty()) {
+                    finalContent = content;
+                    break;
+                }
+
+                // Add assistant message with tool_calls to history
+                Map<String, Object> assistantMsg = new LinkedHashMap<>();
+                assistantMsg.put("role", "assistant");
+                if (content != null) assistantMsg.put("content", content);
+                assistantMsg.put("tool_calls", toolCalls);
+                messages.add(assistantMsg);
+
+                // Execute each tool call
+                for (Map<String, Object> tc : toolCalls) {
+                    String callId = (String) tc.getOrDefault("id", "");
+                    Map<String, Object> function = tc.get("function") instanceof Map<?, ?>
+                            ? (Map<String, Object>) tc.get("function") : Map.of();
+                    String toolName = (String) function.getOrDefault("name", "");
+                    String argsStr = (String) function.getOrDefault("arguments", "{}");
+
+                    Map<String, Object> args;
+                    try {
+                        args = objectMapper.readValue(argsStr, MAP_TYPE);
+                    } catch (Exception e) {
+                        args = Map.of();
+                    }
+
+                    // Publish tool_call event for UI
+                    sseAggregator.publishEvent(runId, sessionId, "tool_call",
+                            RunEvent.DisplayMetadata.builder()
+                                    .category("tool").priority("info")
+                                    .summary("Calling " + toolName).build(),
+                            Map.of("toolName", toolName, "callId", callId)).block();
+
+                    String result = conversationPlatformToolDispatcher.dispatch(toolName, args, toolCtx);
+
+                    // Publish tool_result event
+                    sseAggregator.publishEvent(runId, sessionId, "tool_result",
+                            RunEvent.DisplayMetadata.builder()
+                                    .category("tool").priority("info")
+                                    .summary(toolName + " completed").build(),
+                            Map.of("toolName", toolName, "callId", callId)).block();
+
+                    messages.add(Map.of(
+                            "role", "tool",
+                            "tool_call_id", callId,
+                            "content", result
+                    ));
+                }
+            }
+
+            return finalContent != null ? finalContent : "";
+        }).flatMap(finalText -> {
+            // Emit final text as token events for streaming UX
+            AtomicInteger tokenIndex = new AtomicInteger(0);
+            int chunkSize = 20;
+
+            Mono<Void> emitTokens = Mono.empty();
+            for (int i = 0; i < finalText.length(); i += chunkSize) {
+                String chunk = finalText.substring(i, Math.min(i + chunkSize, finalText.length()));
+                int idx = tokenIndex.getAndIncrement();
+                emitTokens = emitTokens.then(
+                        sseAggregator.publishToken(runId, sessionId, chunk, idx));
+            }
+
+            return emitTokens.then(persistAndFinalize(run, finalText));
+        });
+    }
+
+    /**
+     * Build OpenAI-format tool definitions for direct chat platform tools.
+     */
+    private List<Map<String, Object>> buildDirectChatTools() {
+        List<Map<String, Object>> tools = new ArrayList<>();
+        for (PlatformToolDefinition def : PlatformToolRegistry.enabledToolsInSubset(
+                ConversationPlatformToolConfig.CONVERSATION_TOOLS, null)) {
+            if (conversationPlatformToolDispatcher.hasHandler(def.name())) {
+                tools.add(def.toOpenAiToolFormat());
+            }
+        }
+        return tools;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> extractToolCalls(Map<String, Object> response) {
+        try {
+            List<Map<String, Object>> choices = (List<Map<String, Object>>) response.get("choices");
+            if (choices != null && !choices.isEmpty()) {
+                Map<String, Object> message = (Map<String, Object>) choices.get(0).get("message");
+                if (message != null && message.get("tool_calls") instanceof List<?> tc) {
+                    return (List<Map<String, Object>>) tc;
+                }
+            }
+        } catch (Exception e) {
+            log.trace("Failed to extract tool_calls: {}", e.getMessage());
+        }
+        return null;
     }
 
     private Mono<Void> persistAndFinalize(RunEntity run, String assistantContent) {
