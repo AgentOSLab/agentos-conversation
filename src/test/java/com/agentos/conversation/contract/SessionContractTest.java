@@ -145,9 +145,9 @@ class SessionContractTest {
     @Test @Order(5)
     @DisplayName("GET /api/v1/sessions — 200 OK with paged results")
     void listSessions_returns200() {
-        PageResponse<ConversationSessionEntity> page = new PageResponse<>(
+        PageResponse<ConversationSessionEntity> page = PageResponse.of(
                 Collections.singletonList(sessionEntity("AGENT_CHAT", "active")),
-                1L, 20, 0L);
+                null, 1L);
         when(sessionService.listSessions(eq(TENANT_ID), eq(USER_ID), isNull(), isNull(), eq(20), eq(0L)))
                 .thenReturn(Mono.just(page));
 
@@ -165,9 +165,9 @@ class SessionContractTest {
     @Test @Order(6)
     @DisplayName("GET /api/v1/sessions — 200 OK filtered by status=active")
     void listSessions_filteredByStatus_returns200() {
-        PageResponse<ConversationSessionEntity> page = new PageResponse<>(
+        PageResponse<ConversationSessionEntity> page = PageResponse.of(
                 Collections.singletonList(sessionEntity("AGENT_CHAT", "active")),
-                1L, 20, 0L);
+                null, 1L);
         when(sessionService.listSessions(eq(TENANT_ID), eq(USER_ID), eq("active"), isNull(), eq(20), eq(0L)))
                 .thenReturn(Mono.just(page));
 
@@ -240,7 +240,7 @@ class SessionContractTest {
     @DisplayName("GET /api/v1/sessions/{id}/messages — 200 OK returns paged messages")
     void getMessages_returns200() {
         PageResponse<com.agentos.conversation.model.entity.ConversationMessageEntity> emptyPage =
-                new PageResponse<>(Collections.emptyList(), 0L, 50, 0L);
+                PageResponse.of(Collections.emptyList(), null, 0L);
         when(sessionService.getMessagesPaged(SESSION_ID, 50, 0L))
                 .thenReturn(Mono.just(emptyPage));
 
