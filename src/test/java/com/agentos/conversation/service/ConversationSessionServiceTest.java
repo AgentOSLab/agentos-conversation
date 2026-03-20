@@ -5,6 +5,7 @@ import com.agentos.conversation.model.entity.ConversationSessionEntity;
 import com.agentos.conversation.repository.ConversationMessageRepository;
 import com.agentos.conversation.repository.ConversationSessionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -46,7 +47,7 @@ class ConversationSessionServiceTest {
 
     private ConversationSessionService service;
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
 
     private static final UUID SESSION_ID = UUID.fromString("00000000-0000-0000-0000-000000000011");
     private static final UUID TENANT_ID  = UUID.fromString("00000000-0000-0000-0000-000000000001");
@@ -60,6 +61,9 @@ class ConversationSessionServiceTest {
         ReflectionTestUtils.setField(service, "messageWindowTtlDays", 7);
 
         lenient().when(redisTemplate.opsForList()).thenReturn(listOps);
+        // pushToRedisWindow builds .then(redisTemplate.expire(...)) eagerly — must never be null.
+        lenient().when(redisTemplate.expire(anyString(), any(Duration.class))).thenReturn(Mono.just(true));
+        lenient().when(redisTemplate.delete(anyString())).thenReturn(Mono.just(1L));
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────

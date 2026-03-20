@@ -75,6 +75,18 @@ public class RunStatusSyncService {
                     log.info("Task timed out, syncing run status: taskId={}", taskId);
                     failRunByTaskId(taskId, "TIMEOUT", "Task execution timed out").subscribe();
                 }
+                // GAP-HITL-003 fix: sync Run status when task is awaiting human input,
+                // so clients polling the Run can display a "waiting for input" indicator.
+                // GAP-HITL-001 fix: also handle operation_authorization (MCP risk gate).
+                case "task.hitl.requested", "hitl.required", "skill.hitl.required",
+                        "subagent.hitl.required", "mcp.hitl.required", "operation_authorization" -> {
+                    log.info("Task waiting for human input: taskId={}, event={}", taskId, eventType);
+                    syncRunStatus(taskId, "waiting_for_input").subscribe();
+                }
+                case "task.hitl.resolved" -> {
+                    log.info("Task HITL resolved, resuming: taskId={}", taskId);
+                    syncRunStatus(taskId, "executing").subscribe();
+                }
             }
         } catch (Exception e) {
             log.warn("Failed to process task event: {}", e.getMessage());

@@ -57,6 +57,15 @@ public class ConversationSummarizer {
     private int windowSize;
 
     /**
+     * GAP-RT-006 fix: configurable tokens-per-message estimate.
+     * The old hardcoded 200 over-estimates for short Q&A turns and under-estimates
+     * for long coding/document messages. Operators can tune this per deployment.
+     * When session entities track total character count, replace this with chars/4.
+     */
+    @Value("${agentos.context.tokens-per-message-estimate:150}")
+    private int tokensPerMessageEstimate;
+
+    /**
      * Check whether summarization is needed based on estimated token usage
      * vs. the model's context window, and execute if so.
      *
@@ -134,10 +143,16 @@ public class ConversationSummarizer {
 
     /**
      * Quick token estimate for a session based on message count and existing summary.
-     * Uses a rough heuristic: average ~200 tokens per message.
+     *
+     * GAP-RT-006 fix: uses a configurable {@code tokensPerMessageEstimate} (default 150)
+     * instead of a hardcoded 200. The summary portion uses chars/4 which is standard for
+     * Latin-script text (GPT tokenizer averages ~4 chars per token).
+     *
+     * For higher accuracy, store total message character count in the session entity
+     * and replace {@code messageCount * tokensPerMessageEstimate} with {@code totalChars / 4}.
      */
     private int estimateSessionTokens(int messageCount, String existingSummary) {
-        int msgTokens = messageCount * 200;
+        int msgTokens = messageCount * tokensPerMessageEstimate;
         int summaryTokens = existingSummary != null ? existingSummary.length() / 4 : 0;
         return msgTokens + summaryTokens;
     }

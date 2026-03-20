@@ -11,7 +11,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.util.*;
 
 /**
@@ -62,10 +64,23 @@ public class ConversationPlatformToolConfig {
      * G-002 fix: default namespace pattern for Simple Chat search_knowledge.
      * When the LLM does not provide explicit namespaces, restricts search to
      * the tenant's general knowledge base instead of querying all namespaces.
-     * Supports {tenantId} placeholder.
+     * Supports {@code {tenantId}} placeholder.
+     * <p>Must align with RAG namespace access rules: owned tenant paths have the tenant UUID as the
+     * <strong>second</strong> segment (e.g. {@code memory/{tenantId}/general}).
      */
-    @Value("${agentos.platform-tools.search-knowledge.default-namespace:{tenantId}/general}")
+    @Value("${agentos.platform-tools.search-knowledge.default-namespace:memory/{tenantId}/general}")
     private String defaultNamespacePattern;
+
+    /**
+     * Bounded wait for RAG search — handlers run synchronously but
+     * {@link com.agentos.conversation.orchestration.MessageOrchestrator} schedules the tool loop on
+     * {@code boundedElastic}; a timeout still prevents pool threads from wedging on a stuck upstream.
+     */
+    @Value("${agentos.platform-tools.timeouts.search:30s}")
+    private Duration searchTimeout;
+
+    @Value("${agentos.platform-tools.timeouts.redis:10s}")
+    private Duration redisOpTimeout;
 
     @Bean
     public PlatformToolDispatcher conversationPlatformToolDispatcher(
@@ -88,7 +103,7 @@ public class ConversationPlatformToolConfig {
 
     /**
      * G-002 fix: when the LLM does not specify namespaces, defaults to the tenant's
-     * general namespace ({tenantId}/general) to prevent unbounded cross-namespace queries.
+     * general namespace (default {@code memory/{tenantId}/general}) per RAG access policy.
      */
     @SuppressWarnings("unchecked")
     private PlatformToolHandler searchKnowledgeHandler(WebClient.Builder builder, ObjectMapper om) {
@@ -109,13 +124,17 @@ public class ConversationPlatformToolConfig {
                 Map<String, Object> result = ragClient.post()
                         .uri("/api/v1/search")
                         .header("X-Tenant-Id", ctx.getTenantId() != null ? ctx.getTenantId().toString() : "")
-                        .bodyValue(Map.of("query", query, "namespaces", namespaces, "topK", topK))
+                        .bodyValue(Map.of("query", query, "namespacePaths", namespaces, "topK", topK))
                         .retrieve()
                         .bodyToMono(new org.springframework.core.ParameterizedTypeReference<Map<String, Object>>() {})
-                        .block();
-                return toJson(om, result != null ? result : Map.of("chunks", List.of()));
+                        .timeout(searchTimeout)
+                        .onErrorResume(e -> Mono.just(Map.of(
+                                "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(),
+                                "results", List.of())))
+                        .block(searchTimeout.plusSeconds(2));
+                return toJson(om, result != null ? result : Map.of("results", List.of()));
             } catch (Exception e) {
-                return toJson(om, Map.of("error", "Knowledge search failed: " + e.getMessage(), "chunks", List.of()));
+                return toJson(om, Map.of("error", "Knowledge search failed: " + e.getMessage(), "results", List.of()));
             }
         };
     }
@@ -134,7 +153,7 @@ public class ConversationPlatformToolConfig {
                 artifact.put("createdAt", System.currentTimeMillis());
                 String key = "artifact:" + ctx.getTenantId() + ":" + ctx.getTaskId() + ":" + name;
                 redis.opsForValue().set(key, om.writeValueAsString(artifact),
-                        java.time.Duration.ofDays(7)).block();
+                        java.time.Duration.ofDays(7)).block(redisOpTimeout);
                 return toJson(om, Map.of("status", "saved", "name", name, "type", type, "size", content.length()));
             } catch (Exception e) {
                 return toJson(om, Map.of("error", "Failed to save artifact: " + e.getMessage()));
@@ -148,7 +167,7 @@ public class ConversationPlatformToolConfig {
             String name = (String) args.getOrDefault("name", "");
             String key = "artifact:" + ctx.getTenantId() + ":" + ctx.getTaskId() + ":" + name;
             try {
-                String json = redis.opsForValue().get(key).block();
+                String json = redis.opsForValue().get(key).block(redisOpTimeout);
                 if (json == null) return toJson(om, Map.of("error", "Artifact not found: " + name));
                 return json;
             } catch (Exception e) {
@@ -162,9 +181,17 @@ public class ConversationPlatformToolConfig {
         catch (Exception e) { return "{\"error\":\"JSON serialization failed\"}"; }
     }
 
-    private static int toInt(Object val, int def) {
-        if (val instanceof Number n) return n.intValue();
-        if (val instanceof String s) { try { return Integer.parseInt(s); } catch (Exception ignored) {} }
+    private int toInt(Object val, int def) {
+        if (val instanceof Number n) {
+            return n.intValue();
+        }
+        if (val instanceof String s) {
+            try {
+                return Integer.parseInt(s);
+            } catch (NumberFormatException e) {
+                log.debug("toInt: not a valid integer '{}', using default {}", s, def);
+            }
+        }
         return def;
     }
 }

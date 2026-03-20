@@ -2,6 +2,8 @@ package com.agentos.conversation.config;
 
 import com.agentos.common.reactive.ReactiveJwtAuthFilter;
 import com.agentos.common.reactive.ReactiveSecurityContext;
+import com.agentos.common.reactive.ReactiveTenantJwtCompositeWebFilter;
+import com.agentos.common.reactive.ReactiveTenantContextFilter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -12,10 +14,8 @@ import org.springframework.security.config.web.server.SecurityWebFiltersOrder;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
-import org.springframework.security.core.context.SecurityContextImpl;
 import org.springframework.security.web.server.SecurityWebFilterChain;
 import org.springframework.web.server.WebFilter;
-import reactor.core.publisher.Mono;
 
 import java.util.Collections;
 import java.util.List;
@@ -48,10 +48,10 @@ public class SecurityConfig {
                         .anyExchange().authenticated()
                 );
 
-        if (jwtFilter != null) {
-            http.addFilterAt(jwtFilter, SecurityWebFiltersOrder.AUTHENTICATION);
-            http.addFilterAt(securityContextBridgeFilter(), SecurityWebFiltersOrder.REACTOR_CONTEXT);
-        }
+        // Stateless filter — use `new` so @WebFluxTest slices do not require ReactiveWebAutoConfiguration.
+        http.addFilterAt(ReactiveTenantJwtCompositeWebFilter.of(new ReactiveTenantContextFilter(), jwtFilter),
+                SecurityWebFiltersOrder.FIRST);
+        http.addFilterAt(securityContextBridgeFilter(), SecurityWebFiltersOrder.AUTHENTICATION);
 
         return http.build();
     }
@@ -79,10 +79,9 @@ public class SecurityConfig {
                 var authorities = roles != null
                         ? roles.stream().map(r -> new SimpleGrantedAuthority("ROLE_" + r)).toList()
                         : Collections.<SimpleGrantedAuthority>emptyList();
-                var auth = new UsernamePasswordAuthenticationToken(userId, null, authorities);
+                var auth = new UsernamePasswordAuthenticationToken(userId, "", authorities);
                 return chain.filter(exchange)
-                        .contextWrite(ReactiveSecurityContextHolder.withSecurityContext(
-                                Mono.just(new SecurityContextImpl(auth))));
+                        .contextWrite(ReactiveSecurityContextHolder.withAuthentication(auth));
             }
             return chain.filter(exchange);
         };

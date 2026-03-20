@@ -81,8 +81,10 @@ public class MessageOrchestrator {
                             .build();
 
                     return sessionService.appendMessage(sessionId, userMsg)
-                            .flatMap(savedMsg -> {
-                                RouteDecision route = intentRouter.route(request.getContent(), session);
+                            .flatMap(savedMsg ->
+                                // GAP-RT-001 fix: async routing uses LLM pre-classifier with lexical fallback
+                                intentRouter.route(request.getContent(), session, tenantId)
+                                        .flatMap(route -> {
                                 String routeType = mapRouteType(route.getRouteType());
 
                                 return runService.createRun(sessionId, tenantId, userId, routeType, savedMsg.getId())
@@ -105,7 +107,7 @@ public class MessageOrchestrator {
 
                                             return Mono.just(RunResponse.fromEntity(run));
                                         });
-                            });
+                                }));
                 });
     }
 

@@ -6,8 +6,10 @@ import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
 
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Pattern;
 
 /**
@@ -18,13 +20,17 @@ import java.util.regex.Pattern;
  *   AGENT_TASK   -> create Task -> Agent Runtime (full Agentic Loop)
  *   WORKFLOW     -> create Task -> Agent Runtime (workflow mode)
  *
- * Scoring: multi-dimensional feature extraction computes a "complexity score";
- * above threshold routes to AGENT_TASK.
+ * Routing pipeline (GAP-RT-001 fix):
+ *   1. Session type overrides (WORKFLOW_SILENT, WORKFLOW_CHAT, AGENT_CHAT) — always deterministic
+ *   2. LLM pre-classification via IntentClassifierService (fast model, 2s timeout)
+ *   3. Lexical scoring fallback — when LLM classification is unavailable or times out
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class IntentRouter {
+
+    private final IntentClassifierService intentClassifierService;
 
     private static final double COMPLEXITY_THRESHOLD = 0.4;
 
@@ -80,33 +86,63 @@ public class IntentRouter {
             Pattern.CASE_INSENSITIVE
     );
 
-    public RouteDecision route(String userMessage, ConversationSessionEntity session) {
+    /**
+     * Route a user message to the appropriate execution path.
+     * Returns a Mono to allow async LLM pre-classification (GAP-RT-001 fix).
+     *
+     * @param userMessage the raw user message content
+     * @param session     current conversation session
+     * @param tenantId    tenant scope for LLM pre-classifier
+     */
+    public Mono<RouteDecision> route(String userMessage, ConversationSessionEntity session, UUID tenantId) {
         String sessionType = session.getSessionType();
 
+        // Session-type overrides are deterministic — no LLM needed
         if ("WORKFLOW_SILENT".equals(sessionType) || "SCHEDULED".equals(sessionType)) {
-            return RouteDecision.builder()
+            return Mono.just(RouteDecision.builder()
                     .routeType(RouteType.AGENT_TASK)
                     .interactionMode("SILENT")
                     .complexityScore(1.0)
-                    .build();
+                    .build());
         }
 
         if ("WORKFLOW_CHAT".equals(sessionType)) {
-            return RouteDecision.builder()
+            return Mono.just(RouteDecision.builder()
                     .routeType(RouteType.WORKFLOW)
                     .interactionMode(session.getInteractionMode())
                     .complexityScore(0.8)
-                    .build();
+                    .build());
         }
 
         if ("AGENT_CHAT".equals(sessionType)) {
-            return RouteDecision.builder()
+            return Mono.just(RouteDecision.builder()
                     .routeType(RouteType.AGENT_TASK)
                     .interactionMode(session.getInteractionMode())
                     .complexityScore(0.7)
-                    .build();
+                    .build());
         }
 
+        // GAP-RT-001 fix: attempt LLM pre-classification, fall back to lexical scoring on failure
+        return intentClassifierService.classify(userMessage, tenantId)
+                .map(llmResult -> {
+                    if (llmResult.isPresent()) {
+                        RouteType routeType = llmResult.get();
+                        log.debug("LLM pre-classifier routed '{}' to {}", userMessage.length() > 40
+                                ? userMessage.substring(0, 40) + "..." : userMessage, routeType);
+                        return RouteDecision.builder()
+                                .routeType(routeType)
+                                .interactionMode(routeType == RouteType.SIMPLE_CHAT
+                                        ? "INTERACTIVE" : session.getInteractionMode())
+                                .complexityScore(routeType == RouteType.AGENT_TASK ? 0.8 : 0.2)
+                                .build();
+                    }
+                    // LLM unavailable — fall back to lexical scoring
+                    return lexicalRoute(userMessage, session);
+                });
+    }
+
+    /** Lexical scoring fallback — original scoring logic preserved unchanged. */
+    private RouteDecision lexicalRoute(String userMessage, ConversationSessionEntity session) {
         double score = computeComplexityScore(userMessage);
 
         if (score < COMPLEXITY_THRESHOLD) {

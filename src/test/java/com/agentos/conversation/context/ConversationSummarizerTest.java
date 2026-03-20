@@ -60,6 +60,8 @@ class ConversationSummarizerTest {
         ReflectionTestUtils.setField(summarizer, "summaryTokenMin", 800);
         ReflectionTestUtils.setField(summarizer, "summaryTokenMax", 10000);
         ReflectionTestUtils.setField(summarizer, "windowSize", 20);
+        // Pin to 200 so message-count fixtures stay aligned with threshold math (production default is 150).
+        ReflectionTestUtils.setField(summarizer, "tokensPerMessageEstimate", 200);
 
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
     }
@@ -86,10 +88,13 @@ class ConversationSummarizerTest {
     @Test
     void summarizeIfNeeded_overThreshold_triggersAndReturnsTrue() {
         when(modelContextService.getContextWindow(TENANT_ID)).thenReturn(Mono.just(128000));
+        // Default tokens-per-message-estimate=150 → need count*150 >= 128000*0.8 (=102400).
+        int messageCount = 700;
+        int excessMessages = messageCount - 20; // windowSize=20
         ConversationSessionEntity session = ConversationSessionEntity.builder()
                 .id(SESSION_ID)
                 .tenantId(TENANT_ID)
-                .messageCount(600)
+                .messageCount(messageCount)
                 .conversationSummary(null)
                 .build();
         when(sessionService.getSession(TENANT_ID, SESSION_ID)).thenReturn(Mono.just(session));
@@ -105,7 +110,7 @@ class ConversationSummarizerTest {
                 .content("Test message")
                 .build();
         PageResponse<ConversationMessageEntity> page = PageResponse.of(List.of(msg), null, 1);
-        when(sessionService.getMessagesPaged(eq(SESSION_ID), eq(580), eq(0L)))
+        when(sessionService.getMessagesPaged(eq(SESSION_ID), eq(excessMessages), eq(0L)))
                 .thenReturn(Mono.just(page));
 
         when(llmGatewayClient.chat(any()))
@@ -130,7 +135,7 @@ class ConversationSummarizerTest {
         ConversationSessionEntity session = ConversationSessionEntity.builder()
                 .id(SESSION_ID)
                 .tenantId(TENANT_ID)
-                .messageCount(600)
+                .messageCount(700)
                 .conversationSummary(null)
                 .build();
         when(sessionService.getSession(TENANT_ID, SESSION_ID)).thenReturn(Mono.just(session));

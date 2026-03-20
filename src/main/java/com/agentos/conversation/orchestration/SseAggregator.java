@@ -122,7 +122,9 @@ public class SseAggregator {
             Map.entry("task.mode_escalated", "mode_escalated"),
             Map.entry("skill.hitl.required", "waiting_for_input"),
             Map.entry("subagent.hitl.required", "waiting_for_input"),
-            Map.entry("mcp.hitl.required", "waiting_for_input"),
+            // GAP-HITL-001 fix: MCP tool authorization gets a distinct SSE type so frontends
+            // can render an "Approve tool operation?" UI (not the generic waiting_for_input).
+            Map.entry("mcp.hitl.required", "operation_authorization"),
             Map.entry("hitl.required", "waiting_for_input"),
             Map.entry("step.completed", "step_completed"),
             Map.entry("step.failed", "step_failed")
@@ -474,6 +476,23 @@ public class SseAggregator {
                 runEvent.setInteractionId(strVal(payload, "interactionId"));
                 runEvent.setInteractionType(strVal(payload, "interactionType"));
                 runEvent.setPrompt(strVal(payload, "prompt"));
+            }
+            // GAP-HITL-001 fix: populate all HITL fields for MCP tool authorization events
+            // so the frontend can render "Approve tool operation?" with tool name, risk level,
+            // description, and a resumeToken to call the consent endpoint.
+            case "operation_authorization" -> {
+                runEvent.setInteractionType("OPERATION_AUTHORIZATION");
+                runEvent.setToolName(strVal(payload, "operation"));
+                runEvent.setPrompt(strVal(payload, "description"));
+                // Pass risk level and resumeToken via metadata map
+                Map<String, Object> meta = new java.util.LinkedHashMap<>();
+                String riskLevel = strVal(payload, "riskLevel");
+                if (riskLevel != null) meta.put("riskLevel", riskLevel);
+                Object rawMeta = payload.get("metadata");
+                if (rawMeta instanceof Map<?,?> rawMap) {
+                    rawMap.forEach((k, v) -> meta.put(k.toString(), v));
+                }
+                if (!meta.isEmpty()) runEvent.setArguments(meta);
             }
             case "mode_selected" -> runEvent.setContent(strVal(payload, "mode"));
             case "mode_escalated" -> runEvent.setContent(strVal(payload, "newMode"));

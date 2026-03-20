@@ -1,15 +1,19 @@
 package com.agentos.conversation.contract;
 
 import com.agentos.conversation.api.ConversationSessionController;
+import com.agentos.conversation.config.SecurityConfig;
 import com.agentos.conversation.model.dto.*;
 import com.agentos.conversation.model.entity.ConversationSessionEntity;
 import com.agentos.conversation.orchestration.MessageOrchestrator;
 import com.agentos.conversation.service.ConversationSessionService;
+import com.agentos.common.context.TenantContext;
 import com.agentos.common.model.PageResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.http.HttpHeaders;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -35,6 +39,7 @@ import static org.mockito.Mockito.when;
  * Covers: create, get, list, updateTitle, complete, archive, getMessages.
  */
 @WebFluxTest(controllers = ConversationSessionController.class)
+@Import(SecurityConfig.class)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class SessionContractTest {
 
@@ -47,6 +52,12 @@ class SessionContractTest {
 
     @MockBean private ConversationSessionService sessionService;
     @MockBean private MessageOrchestrator messageOrchestrator;
+
+    /** Simulates API Gateway trusted headers so {@link com.agentos.common.reactive.ReactiveTenantContextFilter} can populate security context. */
+    private void gatewayTrustHeaders(HttpHeaders h) {
+        h.set(TenantContext.AUTHENTICATED_TENANT_HEADER, TENANT_ID.toString());
+        h.set(TenantContext.AUTHENTICATED_USER_HEADER, USER_ID.toString());
+    }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -84,6 +95,7 @@ class SessionContractTest {
         );
 
         webTestClient.post().uri("/api/v1/sessions")
+                .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
                 .header("X-User-Id", USER_ID.toString())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -103,6 +115,7 @@ class SessionContractTest {
         Map<String, Object> body = Map.of("title", "No type");
 
         webTestClient.post().uri("/api/v1/sessions")
+                .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
                 .header("X-User-Id", USER_ID.toString())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -120,6 +133,7 @@ class SessionContractTest {
                 .thenReturn(Mono.just(sessionEntity("AGENT_CHAT", "active")));
 
         webTestClient.get().uri("/api/v1/sessions/" + SESSION_ID)
+                .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
                 .exchange()
                 .expectStatus().isOk()
@@ -135,6 +149,7 @@ class SessionContractTest {
                 .thenReturn(Mono.empty());
 
         webTestClient.get().uri("/api/v1/sessions/00000000-0000-0000-0000-999999999999")
+                .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
                 .exchange()
                 .expectStatus().isNotFound();
@@ -152,6 +167,7 @@ class SessionContractTest {
                 .thenReturn(Mono.just(page));
 
         webTestClient.get().uri("/api/v1/sessions")
+                .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
                 .header("X-User-Id", USER_ID.toString())
                 .exchange()
@@ -172,6 +188,7 @@ class SessionContractTest {
                 .thenReturn(Mono.just(page));
 
         webTestClient.get().uri("/api/v1/sessions?status=active")
+                .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
                 .header("X-User-Id", USER_ID.toString())
                 .exchange()
@@ -191,6 +208,7 @@ class SessionContractTest {
                 .thenReturn(Mono.just(updated));
 
         webTestClient.patch().uri("/api/v1/sessions/" + SESSION_ID + "/title")
+                .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(objectMapper.writeValueAsString(Map.of("title", "New Title")))
@@ -210,6 +228,7 @@ class SessionContractTest {
                 .thenReturn(Mono.just(completed));
 
         webTestClient.post().uri("/api/v1/sessions/" + SESSION_ID + "/complete")
+                .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
                 .exchange()
                 .expectStatus().isOk()
@@ -227,6 +246,7 @@ class SessionContractTest {
                 .thenReturn(Mono.just(archived));
 
         webTestClient.post().uri("/api/v1/sessions/" + SESSION_ID + "/archive")
+                .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
                 .exchange()
                 .expectStatus().isOk()
@@ -245,6 +265,7 @@ class SessionContractTest {
                 .thenReturn(Mono.just(emptyPage));
 
         webTestClient.get().uri("/api/v1/sessions/" + SESSION_ID + "/messages")
+                .headers(this::gatewayTrustHeaders)
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody()
@@ -264,6 +285,7 @@ class SessionContractTest {
         Map<String, Object> config = Map.of("enabledSkillPackageIds", Collections.emptyList());
 
         webTestClient.patch().uri("/api/v1/sessions/" + SESSION_ID + "/mcp-tools")
+                .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(objectMapper.writeValueAsString(config))
@@ -291,6 +313,7 @@ class SessionContractTest {
         Map<String, Object> body = Map.of("content", "Hello, what is the status of JIRA-123?");
 
         webTestClient.post().uri("/api/v1/sessions/" + SESSION_ID + "/messages")
+                .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
                 .header("X-User-Id", USER_ID.toString())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -309,6 +332,7 @@ class SessionContractTest {
         Map<String, Object> body = Map.of("content", "");
 
         webTestClient.post().uri("/api/v1/sessions/" + SESSION_ID + "/messages")
+                .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
                 .header("X-User-Id", USER_ID.toString())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -333,6 +357,7 @@ class SessionContractTest {
 
         webTestClient.get()
                 .uri("/api/v1/sessions/" + SESSION_ID + "/events")
+                .headers(this::gatewayTrustHeaders)
                 .accept(MediaType.TEXT_EVENT_STREAM)
                 .exchange()
                 .expectStatus().isOk()
@@ -347,6 +372,7 @@ class SessionContractTest {
 
         webTestClient.get()
                 .uri("/api/v1/sessions/" + SESSION_ID + "/events")
+                .headers(this::gatewayTrustHeaders)
                 .accept(MediaType.TEXT_EVENT_STREAM)
                 .exchange()
                 .expectStatus().isOk();
