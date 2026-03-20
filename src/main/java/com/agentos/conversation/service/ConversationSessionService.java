@@ -6,11 +6,15 @@ import com.agentos.conversation.model.entity.ConversationSessionEntity;
 import com.agentos.conversation.repository.ConversationMessageRepository;
 import com.agentos.conversation.repository.ConversationSessionRepository;
 import com.agentos.common.model.PageResponse;
+import com.agentos.common.audit.AuditAction;
+import com.agentos.common.audit.AuditClient;
+import com.agentos.common.audit.AuditResourceType;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -27,6 +31,9 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class ConversationSessionService {
+
+    @Autowired(required = false)
+    private AuditClient auditClient;
 
     /** Redis list key prefix for the per-session sliding message window. */
     private static final String SESSION_MSGS_KEY = "session:msgs:";
@@ -57,11 +64,18 @@ public class ConversationSessionService {
                 .mcpToolConfig(toJson(request.getMcpToolConfig()))
                 .build();
 
-        return sessionRepository.save(session);
+        return sessionRepository.save(session)
+                .doOnSuccess(s -> log.info("Session created: sessionId={} agentId={} tenant={}",
+                        s.getId(), request.getBoundEntityId(), tenantId))
+                .flatMap(s -> audit(tenantId, userId, AuditAction.SESSION_CREATE,
+                        AuditResourceType.SESSION, s.getId().toString(),
+                        Map.of("sessionType", request.getSessionType()))
+                        .thenReturn(s));
     }
 
     public Mono<ConversationSessionEntity> getSession(UUID tenantId, UUID sessionId) {
-        return sessionRepository.findByTenantIdAndId(tenantId, sessionId);
+        return sessionRepository.findByTenantIdAndId(tenantId, sessionId)
+                .doOnSuccess(s -> { if (s != null) log.debug("Session retrieved: sessionId={}", sessionId); });
     }
 
     public Mono<PageResponse<ConversationSessionEntity>> listSessions(UUID tenantId, UUID userId,
@@ -78,7 +92,17 @@ public class ConversationSessionService {
                 .flatMap(session -> {
                     session.setStatus(status);
                     session.setUpdatedAt(OffsetDateTime.now());
-                    return sessionRepository.save(session);
+                    return sessionRepository.save(session)
+                            .doOnSuccess(s -> log.info("Session status updated: sessionId={} status={}", sessionId, status));
+                })
+                .flatMap(session -> {
+                    String action = "completed".equals(status) ? AuditAction.SESSION_COMPLETE
+                            : "archived".equals(status) ? AuditAction.SESSION_ARCHIVE
+                            : "session.update_status";
+                    return audit(tenantId, session.getUserId(), action,
+                            AuditResourceType.SESSION, sessionId.toString(),
+                            Map.of("status", status))
+                            .thenReturn(session);
                 });
     }
 
@@ -88,7 +112,11 @@ public class ConversationSessionService {
                     session.setTitle(title);
                     session.setUpdatedAt(OffsetDateTime.now());
                     return sessionRepository.save(session);
-                });
+                })
+                .flatMap(session -> audit(tenantId, session.getUserId(), AuditAction.SESSION_UPDATE_TITLE,
+                        AuditResourceType.SESSION, sessionId.toString(),
+                        Map.of("title", title))
+                        .thenReturn(session));
     }
 
     public Mono<ConversationSessionEntity> updateMcpToolConfig(UUID tenantId, UUID sessionId,
@@ -98,7 +126,10 @@ public class ConversationSessionService {
                     session.setMcpToolConfig(toJson(config));
                     session.setUpdatedAt(OffsetDateTime.now());
                     return sessionRepository.save(session);
-                });
+                })
+                .flatMap(session -> audit(tenantId, session.getUserId(), AuditAction.SESSION_UPDATE_MCP,
+                        AuditResourceType.SESSION, sessionId.toString(), null)
+                        .thenReturn(session));
     }
 
     /**
@@ -116,6 +147,10 @@ public class ConversationSessionService {
                 .flatMap(saved ->
                         sessionRepository.incrementMessageCount(sessionId, OffsetDateTime.now())
                                 .then(pushToRedisWindow(sessionId, saved))
+                                .then(audit(null, null, AuditAction.MESSAGE_SEND,
+                                        AuditResourceType.MESSAGE, saved.getId().toString(),
+                                        Map.of("sessionId", sessionId.toString(),
+                                                "role", String.valueOf(saved.getRole()))))
                                 .thenReturn(saved));
     }
 
@@ -196,7 +231,9 @@ public class ConversationSessionService {
                     msg.setPinned(pinned);
                     return messageRepository.save(msg);
                 })
-                .then();
+                .then(audit(null, null, AuditAction.MESSAGE_PIN,
+                        AuditResourceType.MESSAGE, messageId.toString(),
+                        Map.of("pinned", pinned)));
     }
 
     public Mono<Void> addTokenUsage(UUID sessionId, long tokens) {
@@ -223,6 +260,13 @@ public class ConversationSessionService {
                                                        UUID excludeSessionId, int limit) {
         return sessionRepository.findRecentSummaries(tenantId, userId, excludeSessionId, limit)
                 .collectList();
+    }
+
+    private Mono<Void> audit(UUID tenantId, UUID actorId, String action,
+                              String resourceType, String resourceId,
+                              Map<String, Object> details) {
+        if (auditClient == null) return Mono.empty();
+        return auditClient.record(tenantId, actorId, action, resourceType, resourceId, "success", details);
     }
 
     private String toJson(Map<String, Object> map) {

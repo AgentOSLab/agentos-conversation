@@ -26,7 +26,9 @@ public class SecurityConfig {
 
     private static final String[] PUBLIC_PATHS = {
             "/actuator/health",
-            "/actuator/info"
+            "/actuator/info",
+            "/actuator/metrics/**",
+            "/actuator/prometheus"
     };
 
     @Bean

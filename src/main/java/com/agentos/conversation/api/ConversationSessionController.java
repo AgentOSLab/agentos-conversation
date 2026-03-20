@@ -6,6 +6,7 @@ import com.agentos.conversation.service.ConversationSessionService;
 import com.agentos.common.model.PageResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -17,6 +18,7 @@ import reactor.core.publisher.Mono;
 import java.util.Map;
 import java.util.UUID;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/v1/sessions")
 @RequiredArgsConstructor
@@ -31,6 +33,7 @@ public class ConversationSessionController {
             @RequestHeader("X-User-Id") UUID userId,
             @Valid @RequestBody CreateSessionRequest request) {
 
+        log.info("Creating session: tenant={} userId={} type={}", tenantId, userId, request.getSessionType());
         return sessionService.createSession(tenantId, userId, request)
                 .map(ConversationSessionResponse::fromEntity)
                 .map(resp -> ResponseEntity.status(HttpStatus.CREATED).body(resp));
@@ -45,6 +48,7 @@ public class ConversationSessionController {
             @RequestParam(defaultValue = "20") int limit,
             @RequestParam(defaultValue = "0") long offset) {
 
+        log.debug("Listing sessions: tenant={} userId={} status={} type={}", tenantId, userId, status, sessionType);
         return sessionService.listSessions(tenantId, userId, status, sessionType, limit, offset)
                 .map(page -> page.map(ConversationSessionResponse::fromEntity))
                 .map(ResponseEntity::ok);
@@ -55,6 +59,7 @@ public class ConversationSessionController {
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @PathVariable UUID sessionId) {
 
+        log.debug("Getting session: sessionId={} tenant={}", sessionId, tenantId);
         return sessionService.getSession(tenantId, sessionId)
                 .map(ConversationSessionResponse::fromEntity)
                 .map(ResponseEntity::ok)
@@ -90,6 +95,7 @@ public class ConversationSessionController {
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @PathVariable UUID sessionId) {
 
+        log.info("Completing session: sessionId={} tenant={}", sessionId, tenantId);
         return sessionService.updateSessionStatus(tenantId, sessionId, "completed")
                 .map(ConversationSessionResponse::fromEntity)
                 .map(ResponseEntity::ok)
@@ -101,6 +107,7 @@ public class ConversationSessionController {
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @PathVariable UUID sessionId) {
 
+        log.info("Archiving session: sessionId={} tenant={}", sessionId, tenantId);
         return sessionService.updateSessionStatus(tenantId, sessionId, "archived")
                 .map(ConversationSessionResponse::fromEntity)
                 .map(ResponseEntity::ok)

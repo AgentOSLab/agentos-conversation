@@ -99,6 +99,7 @@ public class IntentRouter {
 
         // Session-type overrides are deterministic — no LLM needed
         if ("WORKFLOW_SILENT".equals(sessionType) || "SCHEDULED".equals(sessionType)) {
+            log.info("Intent routing decision: intent=AGENT_TASK reason=session_type_override sessionId={}", session.getId());
             return Mono.just(RouteDecision.builder()
                     .routeType(RouteType.AGENT_TASK)
                     .interactionMode("SILENT")
@@ -107,6 +108,7 @@ public class IntentRouter {
         }
 
         if ("WORKFLOW_CHAT".equals(sessionType)) {
+            log.info("Intent routing decision: intent=WORKFLOW reason=session_type_override sessionId={}", session.getId());
             return Mono.just(RouteDecision.builder()
                     .routeType(RouteType.WORKFLOW)
                     .interactionMode(session.getInteractionMode())
@@ -115,6 +117,7 @@ public class IntentRouter {
         }
 
         if ("AGENT_CHAT".equals(sessionType)) {
+            log.info("Intent routing decision: intent=AGENT_TASK reason=session_type_override sessionId={}", session.getId());
             return Mono.just(RouteDecision.builder()
                     .routeType(RouteType.AGENT_TASK)
                     .interactionMode(session.getInteractionMode())
@@ -127,8 +130,7 @@ public class IntentRouter {
                 .map(llmResult -> {
                     if (llmResult.isPresent()) {
                         RouteType routeType = llmResult.get();
-                        log.debug("LLM pre-classifier routed '{}' to {}", userMessage.length() > 40
-                                ? userMessage.substring(0, 40) + "..." : userMessage, routeType);
+                        log.info("Intent routing decision: intent={} reason=llm_classifier sessionId={}", routeType, session.getId());
                         return RouteDecision.builder()
                                 .routeType(routeType)
                                 .interactionMode(routeType == RouteType.SIMPLE_CHAT
@@ -136,8 +138,9 @@ public class IntentRouter {
                                 .complexityScore(routeType == RouteType.AGENT_TASK ? 0.8 : 0.2)
                                 .build();
                     }
-                    // LLM unavailable — fall back to lexical scoring
-                    return lexicalRoute(userMessage, session);
+                    RouteDecision decision = lexicalRoute(userMessage, session);
+                    log.info("Intent routing decision: intent={} reason=lexical_fallback sessionId={}", decision.getRouteType(), session.getId());
+                    return decision;
                 });
     }
 

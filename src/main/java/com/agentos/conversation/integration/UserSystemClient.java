@@ -27,18 +27,20 @@ public class UserSystemClient {
     }
 
     public Mono<Map<String, Object>> getUserPermissions(UUID userId, UUID tenantId) {
+        log.debug("User System call: endpoint=/api/v1/users/{}/permissions tenant={}", userId, tenantId);
         return webClient.get()
                 .uri("/api/v1/users/{userId}/permissions", userId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .retrieve()
                 .bodyToMono(MAP_TYPE)
-                .doOnError(e -> log.error("Failed to get user permissions: {}", e.getMessage()))
+                .doOnError(e -> log.error("User System call failed: endpoint=getUserPermissions error={}", e.getMessage()))
                 .onErrorReturn(Map.of());
     }
 
     public Mono<Map<String, Object>> putUserCredential(UUID tenantId, UUID userId,
                                                         String scope, String key,
                                                         Map<String, Object> body) {
+        log.debug("User System call: endpoint=putCredential scope={} key={}", scope, key);
         return webClient.put()
                 .uri("/api/v1/me/credentials/{scope}/{key}", scope, key)
                 .header("X-Tenant-Id", tenantId.toString())
@@ -51,6 +53,7 @@ public class UserSystemClient {
     }
 
     public Mono<List<Map<String, Object>>> listUserCredentials(UUID tenantId, UUID userId) {
+        log.debug("User System call: endpoint=listCredentials userId={}", userId);
         return webClient.get()
                 .uri("/api/v1/me/credentials")
                 .header("X-Tenant-Id", tenantId.toString())
@@ -62,6 +65,7 @@ public class UserSystemClient {
     }
 
     public Mono<Void> deleteUserCredential(UUID tenantId, UUID userId, String scope, String key) {
+        log.debug("User System call: endpoint=deleteCredential scope={} key={}", scope, key);
         return webClient.delete()
                 .uri("/api/v1/me/credentials/{scope}/{key}", scope, key)
                 .header("X-Tenant-Id", tenantId.toString())

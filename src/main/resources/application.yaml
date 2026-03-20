@@ -33,7 +33,10 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus,metrics
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
   metrics:
     tags:
       application: ${spring.application.name}
@@ -55,6 +58,8 @@ agentos:
       public-paths:
         - /actuator/health
         - /actuator/info
+        - /actuator/metrics/**
+        - /actuator/prometheus
       trust-gateway: true
   services:
     agent-runtime-url: ${AGENT_RUNTIME_URL:http://localhost:8004}

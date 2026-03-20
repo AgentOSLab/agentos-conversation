@@ -6,6 +6,7 @@ import com.agentos.conversation.service.RunService;
 import com.agentos.common.model.PageResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -21,6 +22,7 @@ import java.util.UUID;
  * (POST message → GET task events) with a single abstraction:
  *   POST /runs → get runId → GET /runs/{runId}/events (SSE)
  */
+@Slf4j
 @RestController
 @RequestMapping("/api/v1/sessions/{sessionId}")
 @RequiredArgsConstructor
@@ -36,6 +38,7 @@ public class RunController {
             @PathVariable UUID sessionId,
             @Valid @RequestBody CreateRunRequest request) {
 
+        log.info("Creating run: sessionId={} tenant={} userId={}", sessionId, tenantId, userId);
         return orchestrator.createAndExecuteRun(tenantId, userId, sessionId, request)
                 .map(response -> ResponseEntity.status(HttpStatus.CREATED).body(response));
     }
@@ -57,6 +60,7 @@ public class RunController {
             @PathVariable UUID sessionId,
             @PathVariable UUID runId) {
 
+        log.info("Cancelling run: runId={} sessionId={} tenant={}", runId, sessionId, tenantId);
         return orchestrator.cancelRun(runId, tenantId)
                 .map(ResponseEntity::ok);
     }
@@ -90,6 +94,7 @@ public class RunController {
             @PathVariable UUID sessionId,
             @PathVariable UUID runId) {
 
+        log.debug("Getting run status: runId={} sessionId={}", runId, sessionId);
         return runService.getRun(runId, tenantId)
                 .map(RunResponse::fromEntity)
                 .map(ResponseEntity::ok)
@@ -103,6 +108,7 @@ public class RunController {
             @RequestParam(defaultValue = "20") int limit,
             @RequestParam(defaultValue = "0") long offset) {
 
+        log.debug("Listing runs: sessionId={} tenant={}", sessionId, tenantId);
         return runService.listRuns(sessionId, tenantId, limit, offset)
                 .map(ResponseEntity::ok);
     }

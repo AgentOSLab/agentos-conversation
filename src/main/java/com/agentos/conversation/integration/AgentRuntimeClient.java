@@ -25,6 +25,7 @@ public class AgentRuntimeClient {
     }
 
     public Mono<Map<String, Object>> submitTask(Map<String, Object> taskRequest, UUID tenantId, UUID userId) {
+        log.debug("Agent Runtime call: endpoint=/api/v1/tasks tenant={} userId={}", tenantId, userId);
         return webClient.post()
                 .uri("/api/v1/tasks")
                 .header("X-Tenant-Id", tenantId.toString())
@@ -32,16 +33,21 @@ public class AgentRuntimeClient {
                 .bodyValue(taskRequest)
                 .retrieve()
                 .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
-                .doOnError(e -> log.error("Agent Runtime task submission failed: {}", e.getMessage()));
+                .doOnSuccess(resp -> {
+                    Object taskId = resp != null ? resp.get("id") : null;
+                    log.info("Agent Runtime task submitted: taskId={}", taskId);
+                })
+                .doOnError(e -> log.error("Agent Runtime call failed: error={}", e.getMessage()));
     }
 
     public Mono<Map<String, Object>> getTask(UUID taskId, UUID tenantId) {
+        log.debug("Agent Runtime call: endpoint=/api/v1/tasks/{}", taskId);
         return webClient.get()
                 .uri("/api/v1/tasks/{taskId}", taskId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .retrieve()
                 .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
-                .doOnError(e -> log.error("Failed to get task {}: {}", taskId, e.getMessage()));
+                .doOnError(e -> log.error("Agent Runtime call failed: taskId={} error={}", taskId, e.getMessage()));
     }
 
     public Mono<Map<String, Object>> submitHumanInput(UUID taskId, Map<String, Object> input,

@@ -21,20 +21,22 @@ public class HubClient {
     }
 
     public Mono<Map<String, Object>> getAgent(UUID agentId, UUID tenantId) {
+        log.debug("Hub call: endpoint=/api/v1/agents/{} tenant={}", agentId, tenantId);
         return webClient.get()
                 .uri("/api/v1/agents/{agentId}", agentId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .retrieve()
                 .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
-                .doOnError(e -> log.error("Failed to get agent {}: {}", agentId, e.getMessage()));
+                .doOnError(e -> log.error("Hub call failed: endpoint=/api/v1/agents/{} error={}", agentId, e.getMessage()));
     }
 
     public Mono<Map<String, Object>> getSkillPackage(UUID skillPackageId, UUID tenantId) {
+        log.debug("Hub call: endpoint=/api/v1/mcp-skill-packages/{} tenant={}", skillPackageId, tenantId);
         return webClient.get()
                 .uri("/api/v1/mcp-skill-packages/{id}", skillPackageId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .retrieve()
                 .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
-                .doOnError(e -> log.error("Failed to get skill package {}: {}", skillPackageId, e.getMessage()));
+                .doOnError(e -> log.error("Hub call failed: endpoint=/api/v1/mcp-skill-packages/{} error={}", skillPackageId, e.getMessage()));
     }
 }

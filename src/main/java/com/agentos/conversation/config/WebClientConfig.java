@@ -1,5 +1,7 @@
 package com.agentos.conversation.config;
 
+import com.agentos.common.alert.AlertClient;
+import com.agentos.common.alert.DependencyAlertFilter;
 import com.agentos.common.auth.ServiceTokenExchangeFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,35 +21,43 @@ import org.springframework.web.reactive.function.client.WebClient;
 @RequiredArgsConstructor
 public class WebClientConfig {
 
+    private static final String SERVICE_NAME = "conversation";
+
     private final ServiceUrlProperties serviceUrls;
 
     @Autowired(required = false)
     private ServiceTokenExchangeFilter serviceTokenFilter;
 
+    @Autowired(required = false)
+    private AlertClient alertClient;
+
     @Bean
     public WebClient agentRuntimeWebClient(WebClient.Builder builder) {
-        return withServiceToken(builder).baseUrl(serviceUrls.getAgentRuntimeUrl()).build();
+        return withFilters(builder).baseUrl(serviceUrls.getAgentRuntimeUrl()).build();
     }
 
     @Bean
     public WebClient hubWebClient(WebClient.Builder builder) {
-        return withServiceToken(builder).baseUrl(serviceUrls.getHubUrl()).build();
+        return withFilters(builder).baseUrl(serviceUrls.getHubUrl()).build();
     }
 
     @Bean
     public WebClient llmGatewayWebClient(WebClient.Builder builder) {
-        return withServiceToken(builder).baseUrl(serviceUrls.getLlmGatewayUrl()).build();
+        return withFilters(builder).baseUrl(serviceUrls.getLlmGatewayUrl()).build();
     }
 
     @Bean
     public WebClient userSystemWebClient(WebClient.Builder builder) {
-        return withServiceToken(builder).baseUrl(serviceUrls.getUserSystemUrl()).build();
+        return withFilters(builder).baseUrl(serviceUrls.getUserSystemUrl()).build();
     }
 
-    private WebClient.Builder withServiceToken(WebClient.Builder builder) {
+    private WebClient.Builder withFilters(WebClient.Builder builder) {
         WebClient.Builder clone = builder.clone();
         if (serviceTokenFilter != null) {
             clone.filter(serviceTokenFilter);
+        }
+        if (alertClient != null) {
+            clone.filter(new DependencyAlertFilter(alertClient, SERVICE_NAME));
         }
         return clone;
     }

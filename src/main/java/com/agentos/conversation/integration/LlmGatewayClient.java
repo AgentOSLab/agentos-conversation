@@ -23,6 +23,8 @@ public class LlmGatewayClient {
     public Mono<Map<String, Object>> chatCompletion(List<Map<String, Object>> messages,
                                                      List<Map<String, Object>> tools,
                                                      UUID tenantId) {
+        log.debug("LLM Gateway call: endpoint=/api/v1/chat/completions tenant={} toolCount={}",
+                tenantId, tools != null ? tools.size() : 0);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("messages", messages);
         if (tools != null && !tools.isEmpty()) {
@@ -35,7 +37,7 @@ public class LlmGatewayClient {
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
-                .doOnError(e -> log.error("LLM Gateway call failed: {}", e.getMessage()));
+                .doOnError(e -> log.error("LLM Gateway call failed: error={}", e.getMessage()));
     }
 
     public Flux<Map<String, Object>> chatCompletionStream(List<Map<String, Object>> messages,
@@ -82,6 +84,7 @@ public class LlmGatewayClient {
             tenantId = UUID.fromString(requestBody.get("tenantId").toString());
         }
 
+        log.debug("LLM Gateway chat call: tenant={}", tenantId);
         WebClient.RequestBodySpec spec = webClient.post()
                 .uri("/api/v1/chat/completions");
         if (tenantId != null) {
@@ -91,6 +94,6 @@ public class LlmGatewayClient {
         return spec.bodyValue(requestBody)
                 .retrieve()
                 .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
-                .doOnError(e -> log.error("LLM Gateway call failed: {}", e.getMessage()));
+                .doOnError(e -> log.error("LLM Gateway call failed: error={}", e.getMessage()));
     }
 }
