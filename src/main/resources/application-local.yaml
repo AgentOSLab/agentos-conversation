@@ -1,0 +1,6 @@
+# Local dev profile — run with: --spring.profiles.active=local
+
+agentos:
+  security:
+    jwt:
+      secret: local-dev-jwt-secret-change-in-production-32bytes
