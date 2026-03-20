@@ -58,6 +58,15 @@ public class ConversationPlatformToolConfig {
     @Value("${agentos.platform-tools.fetch-url.max-chars:10000}")
     private int fetchUrlMaxChars;
 
+    /**
+     * G-002 fix: default namespace pattern for Simple Chat search_knowledge.
+     * When the LLM does not provide explicit namespaces, restricts search to
+     * the tenant's general knowledge base instead of querying all namespaces.
+     * Supports {tenantId} placeholder.
+     */
+    @Value("${agentos.platform-tools.search-knowledge.default-namespace:{tenantId}/general}")
+    private String defaultNamespacePattern;
+
     @Bean
     public PlatformToolDispatcher conversationPlatformToolDispatcher(
             ObjectMapper objectMapper,
@@ -77,6 +86,10 @@ public class ConversationPlatformToolConfig {
         return dispatcher;
     }
 
+    /**
+     * G-002 fix: when the LLM does not specify namespaces, defaults to the tenant's
+     * general namespace ({tenantId}/general) to prevent unbounded cross-namespace queries.
+     */
     @SuppressWarnings("unchecked")
     private PlatformToolHandler searchKnowledgeHandler(WebClient.Builder builder, ObjectMapper om) {
         WebClient ragClient = builder.baseUrl(ragBaseUrl).build();
@@ -84,7 +97,14 @@ public class ConversationPlatformToolConfig {
             String query = (String) args.getOrDefault("query", "");
             List<String> namespaces = args.get("namespaces") instanceof List<?> ns
                     ? (List<String>) ns : List.of();
-            int topK = toInt(args.get("top_k"), 5);
+            if (namespaces.isEmpty() && ctx.getTenantId() != null) {
+                String tenantDefault = defaultNamespacePattern
+                        .replace("{tenantId}", ctx.getTenantId().toString());
+                namespaces = List.of(tenantDefault);
+                log.debug("G-002: No namespaces provided, defaulting to {}", tenantDefault);
+            }
+            // P7-RAG fix: cap topK to prevent LLM from requesting excessive results
+            int topK = Math.min(toInt(args.get("top_k"), 5), 20);
             try {
                 Map<String, Object> result = ragClient.post()
                         .uri("/api/v1/search")

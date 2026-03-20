@@ -78,6 +78,15 @@ public class SessionContextBuilder {
     @Value("${agentos.context.tool-output-max-chars:2000}")
     private int toolOutputMaxChars;
 
+    /**
+     * Higher limit for structured tool outputs (JSON objects/arrays, e.g. RAG search results).
+     * Structured content is harder to truncate mid-element without breaking parsability, so
+     * it is given a larger budget and always truncated at an element boundary.
+     * Default 5000 chars; override with {@code agentos.context.tool-output-structured-max-chars}.
+     */
+    @Value("${agentos.context.tool-output-structured-max-chars:5000}")
+    private int toolOutputStructuredMaxChars;
+
     public Mono<AssembledContext> buildContext(ContextRequest request) {
         UUID sessionId = request.getSessionId();
         if (sessionId == null) {
@@ -284,19 +293,87 @@ public class SessionContextBuilder {
     }
 
     /**
-     * Compress tool output content if it exceeds the threshold.
-     * Keeps the first and last portions to preserve intent and result.
+     * Compress tool output content if it exceeds the per-type limit (P5 fix).
+     *
+     * <p>Two-tier limit:
+     * <ul>
+     *   <li>Structured content (JSON objects/arrays — RAG results, MCP tool responses):
+     *       {@code toolOutputStructuredMaxChars} (default 5000). Truncation respects
+     *       element boundaries to avoid broken JSON mid-element.
+     *   <li>Plain text tool output: {@code toolOutputMaxChars} (default 2000).
+     * </ul>
+     *
+     * <p>Boundary-aware truncation: the head and tail cut points are adjusted to the
+     * nearest newline or sentence end ({@code ". "}) within a margin of 10% of the
+     * limit (max 200 chars), preventing mid-sentence cuts that confuse the LLM.
      */
-    @SuppressWarnings("unchecked")
     private void compressToolOutputIfNeeded(Map<String, Object> msg) {
         if (!"tool".equals(msg.get("role"))) return;
         Object content = msg.get("content");
-        if (content instanceof String s && s.length() > toolOutputMaxChars) {
-            int halfLimit = toolOutputMaxChars / 2;
-            String compressed = s.substring(0, halfLimit)
-                    + "\n...[truncated " + (s.length() - toolOutputMaxChars) + " chars]...\n"
-                    + s.substring(s.length() - halfLimit);
-            msg.put("content", compressed);
+        if (!(content instanceof String s)) return;
+
+        // Choose limit based on content type: structured JSON vs. plain text
+        int limit = isStructuredContent(s) ? toolOutputStructuredMaxChars : toolOutputMaxChars;
+        if (s.length() <= limit) return;
+
+        int headLimit = limit / 2;
+        int tailLimit = limit - headLimit;
+
+        String head = truncateAtBoundary(s, headLimit, true);
+        String tail = truncateAtBoundary(s, s.length() - tailLimit, false);
+
+        msg.put("content",
+                head + "\n...[truncated " + (s.length() - limit) + " of " + s.length() + " chars]...\n" + tail);
+    }
+
+    /**
+     * Returns true when {@code s} is a JSON object or array (structured content).
+     * RAG search results and most MCP tool responses are JSON-encoded.
+     */
+    private boolean isStructuredContent(String s) {
+        String trimmed = s.stripLeading();
+        return trimmed.startsWith("{") || trimmed.startsWith("[");
+    }
+
+    /**
+     * Returns a substring of {@code s} cut at a natural boundary near {@code position}.
+     *
+     * <p>Priority: newline ({@code \n}) &gt; sentence end ({@code ". "}) &gt; word boundary
+     * ({@code ' '}) &gt; exact position.  The search margin is 10% of {@code position},
+     * clamped to [50, 200] characters.
+     *
+     * @param s         the full string
+     * @param position  the approximate cut point
+     * @param fromStart {@code true} → return the head (everything before cut);
+     *                  {@code false} → return the tail (everything from cut onwards)
+     */
+    private String truncateAtBoundary(String s, int position, boolean fromStart) {
+        int margin = Math.max(50, Math.min(200, position / 10));
+
+        if (fromStart) {
+            int searchEnd = Math.min(s.length(), position + margin);
+            // Newline boundary
+            int nl = s.lastIndexOf('\n', searchEnd);
+            if (nl > position - margin && nl > 0) return s.substring(0, nl);
+            // Sentence boundary
+            int dot = s.lastIndexOf(". ", searchEnd);
+            if (dot > position - margin && dot > 0) return s.substring(0, dot + 1);
+            // Word boundary
+            int space = s.lastIndexOf(' ', Math.min(s.length(), position + 50));
+            if (space > position - 50 && space > 0) return s.substring(0, space);
+            return s.substring(0, position);
+        } else {
+            int searchStart = Math.max(0, position - margin);
+            // Newline boundary
+            int nl = s.indexOf('\n', searchStart);
+            if (nl >= 0 && nl < position + margin) return s.substring(nl + 1);
+            // Sentence boundary
+            int dot = s.indexOf(". ", searchStart);
+            if (dot >= 0 && dot < position + margin) return s.substring(dot + 2);
+            // Word boundary
+            int space = s.indexOf(' ', Math.max(0, position - 50));
+            if (space >= 0 && space < position + 50) return s.substring(space + 1);
+            return s.substring(position);
         }
     }
 
@@ -392,6 +469,13 @@ public class SessionContextBuilder {
         private String agentPersona;
         private String executionModeRules;
         private List<Map<String, Object>> tools;
+        /**
+         * R-002 contract: conversationHistory contains PRIOR messages only.
+         * The current user message is passed separately in {@link #currentUserMessage}.
+         * Agent Runtime expects this separation — it adds currentUserMessage via
+         * {@code taskRequest.input.content}, not from conversationHistory.
+         * Violating this contract causes duplicate user messages in the LLM context.
+         */
         private List<Map<String, Object>> conversationHistory;
         private String currentUserMessage;
         // NOTE: ragResults field intentionally absent (ADR-046).

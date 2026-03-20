@@ -1,0 +1,17 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    uses: AgentOSLab/agentos-infra/.github/workflows/java-service-ci.yaml@main
+    with:
+      service-name: agentos-conversation
+    permissions:
+      contents: read
+      packages: read
+      security-events: write

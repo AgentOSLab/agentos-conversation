@@ -10,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.connection.ReactiveSubscription;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Component;
@@ -18,6 +19,7 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -51,6 +53,37 @@ public class SseAggregator {
     private static final String SESSION_CHANNEL_PREFIX = "session_channel:";
 
     /**
+     * Lua script that atomically writes an event to the sorted-set buffer AND
+     * publishes it to the Pub/Sub channel in a single server-side operation.
+     *
+     * Atomicity guarantee (P3 fix): Because ZADD + EXPIRE + PUBLISH execute in a
+     * single script, a Pub/Sub subscriber that receives an event is guaranteed to
+     * find that event in the sorted-set buffer on reconnect.  Without this script,
+     * a client could receive an event via PUBLISH before ZADD completes (due to
+     * concurrent thread interleaving), and then miss it on replay.
+     *
+     * Note: INCR (sequence assignment) still runs separately before this script.
+     * This is intentional: we cannot embed the seq in the event JSON and ZADD it
+     * inside the same atomic INCR call.  The remaining (benign) race is that two
+     * concurrent publishers may deliver events via PUBLISH in a different order than
+     * their sequence numbers; clients sort by the embedded sequence number, so
+     * display ordering is always correct.
+     *
+     * KEYS: [1] bufferKey  (run_events:{runId})
+     *       [2] channelKey (run_channel:{runId})
+     * ARGV: [1] seq (double/long — used as ZADD score)
+     *       [2] event JSON (stored in sorted set and published)
+     *       [3] TTL seconds (integer)
+     * Returns: 1 (success).
+     */
+    private static final RedisScript<Long> ZADD_AND_PUBLISH_SCRIPT = RedisScript.of(
+            "redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])\n" +
+            "redis.call('EXPIRE', KEYS[1], ARGV[3])\n" +
+            "redis.call('PUBLISH', KEYS[2], ARGV[2])\n" +
+            "return 1",
+            Long.class);
+
+    /**
      * TTL for the Redis event buffer Sorted Set (and associated metadata keys).
      * Must be longer than the longest expected agent task execution time so that
      * clients reconnecting mid-task can still replay missed events.
@@ -65,6 +98,67 @@ public class SseAggregator {
     private final RunService runService;
     private final ReactiveStringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
+
+    /**
+     * P4-HITL fix: configurable event type mapping registry.
+     *
+     * Default mappings normalize Agent Runtime event types to Run-level event types.
+     * Additional mappings can be injected via Spring config property
+     * {@code agentos.sse.event-type-mappings} (comma-separated key=value pairs,
+     * e.g. {@code "custom.event=custom_mapped,another.event=mapped_type"}).
+     */
+    private static final Map<String, String> DEFAULT_EVENT_TYPE_MAP = Map.ofEntries(
+            Map.entry("step.llm.thinking", "thinking"),
+            Map.entry("reasoning", "thinking"),
+            Map.entry("human_input_required", "waiting_for_input"),
+            Map.entry("task_completed", "run_completed"),
+            Map.entry("task.completed", "run_completed"),
+            Map.entry("completed", "run_completed"),
+            Map.entry("task_failed", "run_failed"),
+            Map.entry("task.failed", "run_failed"),
+            Map.entry("failed", "run_failed"),
+            Map.entry("task.cancelled", "run_cancelled"),
+            Map.entry("task.mode_escalation_requested", "mode_escalation_requested"),
+            Map.entry("task.mode_escalated", "mode_escalated"),
+            Map.entry("skill.hitl.required", "waiting_for_input"),
+            Map.entry("subagent.hitl.required", "waiting_for_input"),
+            Map.entry("mcp.hitl.required", "waiting_for_input"),
+            Map.entry("hitl.required", "waiting_for_input"),
+            Map.entry("step.completed", "step_completed"),
+            Map.entry("step.failed", "step_failed")
+    );
+
+    /**
+     * P4-HITL: custom event type mappings from config, merged with defaults at startup.
+     * Format: comma-separated {@code source=target} pairs.
+     * Example: {@code agentos.sse.event-type-mappings=custom.event=custom_mapped}
+     */
+    @Value("${agentos.sse.event-type-mappings:}")
+    private String customEventTypeMappings;
+
+    private volatile Map<String, String> mergedEventTypeMap;
+
+    private Map<String, String> eventTypeMap() {
+        if (mergedEventTypeMap == null) {
+            synchronized (this) {
+                if (mergedEventTypeMap == null) {
+                    Map<String, String> merged = new java.util.HashMap<>(DEFAULT_EVENT_TYPE_MAP);
+                    if (customEventTypeMappings != null && !customEventTypeMappings.isBlank()) {
+                        for (String pair : customEventTypeMappings.split(",")) {
+                            String[] kv = pair.trim().split("=", 2);
+                            if (kv.length == 2 && !kv[0].isBlank() && !kv[1].isBlank()) {
+                                merged.put(kv[0].trim(), kv[1].trim());
+                                log.info("P4-HITL: custom event type mapping registered: {} → {}",
+                                        kv[0].trim(), kv[1].trim());
+                            }
+                        }
+                    }
+                    mergedEventTypeMap = Map.copyOf(merged);
+                }
+            }
+        }
+        return mergedEventTypeMap;
+    }
 
     // ─────────────── Public API: Event Publishing ───────────────
 
@@ -397,16 +491,12 @@ public class SseAggregator {
         }
     }
 
+    /**
+     * P4-HITL fix: uses a configurable map for event type normalization.
+     * Unmapped event types are passed through as-is.
+     */
     private String mapEventType(String agentRuntimeType) {
-        return switch (agentRuntimeType) {
-            // P3-016: step.llm.thinking is the canonical type emitted by LlmCallStepExecutor
-            case "step.llm.thinking", "reasoning" -> "thinking";
-            case "human_input_required" -> "waiting_for_input";
-            case "task_completed", "task.completed", "completed" -> "run_completed";
-            case "task_failed", "task.failed", "failed" -> "run_failed";
-            case "task.cancelled" -> "run_cancelled";
-            default -> agentRuntimeType;
-        };
+        return eventTypeMap().getOrDefault(agentRuntimeType, agentRuntimeType);
     }
 
     private boolean isTerminalTaskEvent(String rawMessage) {
@@ -462,24 +552,47 @@ public class SseAggregator {
 
     // ─────────────── Redis Operations ───────────────
 
+    /**
+     * Atomically increments and returns the next monotonic sequence number for a run.
+     * The TTL on the seq key is set inside {@link #bufferAndPublish} when seq == 1.
+     */
     private Mono<Long> nextSequence(UUID runId) {
         return redisTemplate.opsForValue()
-                .increment(EVENT_SEQ_PREFIX + runId)
-                .doOnNext(seq -> {
-                    if (seq == 1L) {
-                        redisTemplate.expire(EVENT_SEQ_PREFIX + runId, Duration.ofMinutes(eventBufferTtlMinutes)).subscribe();
-                    }
-                });
+                .increment(EVENT_SEQ_PREFIX + runId);
     }
 
+    /**
+     * Atomically writes the event to the sorted-set buffer and publishes it to the
+     * run's Pub/Sub channel via a single Lua script (P3 fix).
+     *
+     * <p>Guarantee: any Pub/Sub subscriber that receives this event will find it in
+     * the sorted set if it reconnects immediately afterward, because ZADD and PUBLISH
+     * execute in the same server-side operation with no observable gap.
+     *
+     * <p>After the atomic core, the session-level mirror publish and the DB
+     * last-event-id update run as fire-and-forget side effects.
+     */
     private Mono<Void> bufferAndPublish(UUID runId, RunEvent event, long seq) {
         String json = toJson(event);
         String bufferKey = EVENT_BUFFER_PREFIX + runId;
         String channelKey = EVENT_CHANNEL_PREFIX + runId;
+        String ttlStr = String.valueOf((long) eventBufferTtlMinutes * 60);
 
-        Mono<Void> publish = redisTemplate.opsForZSet().add(bufferKey, json, seq)
-                .then(redisTemplate.expire(bufferKey, Duration.ofMinutes(eventBufferTtlMinutes)))
-                .then(redisTemplate.convertAndSend(channelKey, json))
+        // Atomic ZADD + EXPIRE + PUBLISH (Lua script, P3 fix)
+        Mono<Void> atomic = redisTemplate
+                .execute(ZADD_AND_PUBLISH_SCRIPT,
+                        List.of(bufferKey, channelKey),
+                        List.of(String.valueOf(seq), json, ttlStr))
+                .then();
+
+        // Expire the seq key on first event (fire-and-forget)
+        if (seq == 1L) {
+            atomic = atomic.then(
+                    redisTemplate.expire(EVENT_SEQ_PREFIX + runId,
+                            Duration.ofMinutes(eventBufferTtlMinutes)).then());
+        }
+
+        Mono<Void> publish = atomic
                 .then(runService.updateLastEventId(runId, event.getEventId()))
                 .then();
 
