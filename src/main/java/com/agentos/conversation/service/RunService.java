@@ -53,9 +53,25 @@ public class RunService {
         return runRepository.findByIdAndTenantId(runId, tenantId);
     }
 
+    /**
+     * Run row scoped to the authenticated user (defense in depth vs tenant-wide IAM on session ARN).
+     */
+    public Mono<RunEntity> getRunForUser(UUID runId, UUID tenantId, UUID userId) {
+        return runRepository.findByIdAndTenantIdAndUserId(runId, tenantId, userId);
+    }
+
     public Mono<PageResponse<RunResponse>> listRuns(UUID sessionId, UUID tenantId, int limit, long offset) {
         return runRepository.countBySession(sessionId, tenantId)
                 .flatMap(total -> runRepository.findBySession(sessionId, tenantId, limit, (int) offset)
+                        .map(RunResponse::fromEntity)
+                        .collectList()
+                        .map(items -> PageResponse.of(items, null, total)));
+    }
+
+    public Mono<PageResponse<RunResponse>> listRunsForUser(UUID sessionId, UUID tenantId, UUID userId,
+                                                           int limit, long offset) {
+        return runRepository.countBySessionAndUser(sessionId, tenantId, userId)
+                .flatMap(total -> runRepository.findBySessionAndUser(sessionId, tenantId, userId, limit, (int) offset)
                         .map(RunResponse::fromEntity)
                         .collectList()
                         .map(items -> PageResponse.of(items, null, total)));

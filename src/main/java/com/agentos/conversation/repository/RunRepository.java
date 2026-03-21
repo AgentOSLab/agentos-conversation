@@ -16,6 +16,12 @@ public interface RunRepository extends ReactiveCrudRepository<RunEntity, UUID> {
 
     @Query("""
             SELECT * FROM runs
+            WHERE id = :id AND tenant_id = :tenantId AND user_id = :userId
+            """)
+    Mono<RunEntity> findByIdAndTenantIdAndUserId(UUID id, UUID tenantId, UUID userId);
+
+    @Query("""
+            SELECT * FROM runs
             WHERE session_id = :sessionId AND tenant_id = :tenantId
             ORDER BY created_at DESC
             LIMIT :limit OFFSET :offset
@@ -24,6 +30,20 @@ public interface RunRepository extends ReactiveCrudRepository<RunEntity, UUID> {
 
     @Query("SELECT COUNT(*) FROM runs WHERE session_id = :sessionId AND tenant_id = :tenantId")
     Mono<Long> countBySession(UUID sessionId, UUID tenantId);
+
+    @Query("""
+            SELECT * FROM runs
+            WHERE session_id = :sessionId AND tenant_id = :tenantId AND user_id = :userId
+            ORDER BY created_at DESC
+            LIMIT :limit OFFSET :offset
+            """)
+    Flux<RunEntity> findBySessionAndUser(UUID sessionId, UUID tenantId, UUID userId, int limit, long offset);
+
+    @Query("""
+            SELECT COUNT(*) FROM runs
+            WHERE session_id = :sessionId AND tenant_id = :tenantId AND user_id = :userId
+            """)
+    Mono<Long> countBySessionAndUser(UUID sessionId, UUID tenantId, UUID userId);
 
     @Modifying
     @Query("""

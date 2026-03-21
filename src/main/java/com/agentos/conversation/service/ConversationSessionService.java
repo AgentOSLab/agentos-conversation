@@ -17,7 +17,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
@@ -239,15 +241,19 @@ public class ConversationSessionService {
                         .map(items -> PageResponse.of(items, null, total)));
     }
 
-    public Mono<Void> pinMessage(UUID messageId, boolean pinned) {
+    public Mono<Void> pinMessage(UUID sessionId, UUID messageId, boolean pinned) {
         return messageRepository.findById(messageId)
+                .filter(msg -> sessionId.equals(msg.getSessionId()))
+                .switchIfEmpty(Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Message not found")))
                 .flatMap(msg -> {
                     msg.setPinned(pinned);
                     return messageRepository.save(msg);
                 })
-                .then(audit(null, null, AuditAction.MESSAGE_PIN,
+                .flatMap(msg -> audit(null, null, AuditAction.MESSAGE_PIN,
                         AuditResourceType.MESSAGE, messageId.toString(),
-                        Map.of("pinned", pinned)));
+                        Map.of("pinned", pinned))
+                        .thenReturn(msg))
+                .then();
     }
 
     public Mono<Void> addTokenUsage(UUID sessionId, long tokens) {
@@ -264,6 +270,14 @@ public class ConversationSessionService {
 
     public Mono<ConversationMessageEntity> getMessageById(UUID messageId) {
         return messageRepository.findById(messageId);
+    }
+
+    /**
+     * Resolves a message only if it belongs to the given session (prevents cross-session message id reuse).
+     */
+    public Mono<ConversationMessageEntity> getMessageForSession(UUID messageId, UUID sessionId) {
+        return messageRepository.findById(messageId)
+                .filter(m -> sessionId.equals(m.getSessionId()));
     }
 
     /**

@@ -59,7 +59,11 @@ public class RunController {
 
         return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_READ,
                         ResourceArn.conversationSession(tenantId, sessionId))
-                .thenMany(orchestrator.streamRunEvents(runId, sessionId, tenantId, userId, lastEventId));
+                .then(runService.getRunForUser(runId, tenantId, userId))
+                .filter(run -> sessionId.equals(run.getSessionId()))
+                .switchIfEmpty(Mono.error(new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "Run not found")))
+                .flatMapMany(run -> orchestrator.streamRunEvents(run.getId(), sessionId, tenantId, userId, lastEventId));
     }
 
     @PostMapping("/runs/{runId}/cancel")
@@ -72,7 +76,7 @@ public class RunController {
         log.info("Cancelling run: runId={} sessionId={} tenant={}", runId, sessionId, tenantId);
         return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_EXECUTE,
                         ResourceArn.conversationSession(tenantId, sessionId))
-                .then(orchestrator.cancelRun(runId, tenantId))
+                .then(orchestrator.cancelRun(runId, sessionId, tenantId, userId))
                 .map(ResponseEntity::ok);
     }
 
@@ -86,7 +90,7 @@ public class RunController {
 
         return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_EXECUTE,
                         ResourceArn.conversationSession(tenantId, sessionId))
-                .then(orchestrator.submitHumanInput(runId, tenantId, userId, request))
+                .then(orchestrator.submitHumanInput(runId, sessionId, tenantId, userId, request))
                 .then(Mono.just(ResponseEntity.ok().<Void>build()));
     }
 
@@ -113,7 +117,8 @@ public class RunController {
         log.debug("Getting run status: runId={} sessionId={}", runId, sessionId);
         return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_READ,
                         ResourceArn.conversationSession(tenantId, sessionId))
-                .then(runService.getRun(runId, tenantId))
+                .then(runService.getRunForUser(runId, tenantId, userId))
+                .filter(run -> sessionId.equals(run.getSessionId()))
                 .map(RunResponse::fromEntity)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
@@ -130,7 +135,7 @@ public class RunController {
         log.debug("Listing runs: sessionId={} tenant={}", sessionId, tenantId);
         return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_READ,
                         ResourceArn.conversationSession(tenantId, sessionId))
-                .then(runService.listRuns(sessionId, tenantId, limit, offset))
+                .then(runService.listRunsForUser(sessionId, tenantId, userId, limit, offset))
                 .map(ResponseEntity::ok);
     }
 }

@@ -1,9 +1,11 @@
 package com.agentos.conversation.api;
 
+import com.agentos.common.iam.IamActions;
+import com.agentos.common.iam.ResourceArn;
+import com.agentos.conversation.security.IamPep;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
@@ -24,8 +26,9 @@ import java.util.UUID;
  * through Conversation (ADR-041). This controller preserves the public API surface
  * at {@code /api/v1/tasks/**} while enforcing the layer boundary.
  *
- * <p>IAM/PEP authorization is enforced by Agent Runtime on the received headers.
- * This proxy does not duplicate authorization checks.
+ * <p>PDP-backed PEP runs here before forwarding. Agent Runtime internal APIs do not
+ * re-check IAM; see {@code audit/iam-pep-review-agentos-conversation.md} for action choice
+ * vs preset role policies.
  */
 @Slf4j
 @RestController
@@ -36,6 +39,7 @@ public class TaskProxyController {
     private static final ParameterizedTypeReference<Map<String, Object>> MAP_TYPE =
             new ParameterizedTypeReference<>() {};
 
+    private final IamPep iamPep;
     private final @Qualifier("agentRuntimeWebClient") WebClient agentRuntimeClient;
 
     @PostMapping
@@ -43,13 +47,15 @@ public class TaskProxyController {
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @RequestHeader("X-User-Id") UUID userId,
             @RequestBody Map<String, Object> request) {
-        return agentRuntimeClient.post()
+        return iamPep.require(tenantId, userId, IamActions.AGENT_RUNTIME_AGENT_RUN,
+                        submitTaskResourceArn(tenantId, request))
+                .then(agentRuntimeClient.post()
                 .uri("/api/internal/v1/tasks")
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .bodyValue(request)
                 .retrieve()
-                .toEntity(MAP_TYPE);
+                .toEntity(MAP_TYPE));
     }
 
     @GetMapping
@@ -62,7 +68,9 @@ public class TaskProxyController {
             @RequestParam(defaultValue = "false") boolean tenantScope,
             @RequestParam(defaultValue = "20") int pageSize,
             @RequestParam(defaultValue = "0") int page) {
-        return agentRuntimeClient.get()
+        return iamPep.require(tenantId, userId, IamActions.AGENT_RUNTIME_AGENT_RUN,
+                        ResourceArn.agentRuntimeTaskWildcard(tenantId))
+                .then(agentRuntimeClient.get()
                 .uri(u -> u.path("/api/internal/v1/tasks")
                         .queryParam("pageSize", pageSize)
                         .queryParam("page", page)
@@ -74,7 +82,7 @@ public class TaskProxyController {
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .retrieve()
-                .toEntity(MAP_TYPE);
+                .toEntity(MAP_TYPE));
     }
 
     @GetMapping("/{taskId}")
@@ -82,12 +90,14 @@ public class TaskProxyController {
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID taskId) {
-        return agentRuntimeClient.get()
+        return iamPep.require(tenantId, userId, IamActions.AGENT_RUNTIME_AGENT_RUN,
+                        ResourceArn.agentRuntimeTask(tenantId, taskId))
+                .then(agentRuntimeClient.get()
                 .uri("/api/internal/v1/tasks/{taskId}", taskId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .retrieve()
-                .toEntity(MAP_TYPE);
+                .toEntity(MAP_TYPE));
     }
 
     @PostMapping("/{taskId}/cancel")
@@ -96,13 +106,15 @@ public class TaskProxyController {
             @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID taskId,
             @RequestBody(required = false) Map<String, Object> request) {
-        return agentRuntimeClient.post()
+        return iamPep.require(tenantId, userId, IamActions.AGENT_RUNTIME_AGENT_RUN,
+                        ResourceArn.agentRuntimeTask(tenantId, taskId))
+                .then(agentRuntimeClient.post()
                 .uri("/api/internal/v1/tasks/{taskId}/cancel", taskId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .bodyValue(request != null ? request : Map.of())
                 .retrieve()
-                .toEntity(MAP_TYPE);
+                .toEntity(MAP_TYPE));
     }
 
     @PostMapping("/{taskId}/pause")
@@ -110,12 +122,14 @@ public class TaskProxyController {
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID taskId) {
-        return agentRuntimeClient.post()
+        return iamPep.require(tenantId, userId, IamActions.AGENT_RUNTIME_AGENT_RUN,
+                        ResourceArn.agentRuntimeTask(tenantId, taskId))
+                .then(agentRuntimeClient.post()
                 .uri("/api/internal/v1/tasks/{taskId}/pause", taskId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .retrieve()
-                .toEntity(MAP_TYPE);
+                .toEntity(MAP_TYPE));
     }
 
     @PostMapping("/{taskId}/resume")
@@ -123,12 +137,14 @@ public class TaskProxyController {
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID taskId) {
-        return agentRuntimeClient.post()
+        return iamPep.require(tenantId, userId, IamActions.AGENT_RUNTIME_AGENT_RUN,
+                        ResourceArn.agentRuntimeTask(tenantId, taskId))
+                .then(agentRuntimeClient.post()
                 .uri("/api/internal/v1/tasks/{taskId}/resume", taskId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .retrieve()
-                .toEntity(MAP_TYPE);
+                .toEntity(MAP_TYPE));
     }
 
     @PostMapping("/{taskId}/takeover")
@@ -137,13 +153,15 @@ public class TaskProxyController {
             @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID taskId,
             @RequestBody Map<String, Object> request) {
-        return agentRuntimeClient.post()
+        return iamPep.require(tenantId, userId, IamActions.AGENT_RUNTIME_AGENT_RUN,
+                        ResourceArn.agentRuntimeTask(tenantId, taskId))
+                .then(agentRuntimeClient.post()
                 .uri("/api/internal/v1/tasks/{taskId}/takeover", taskId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .bodyValue(request)
                 .retrieve()
-                .toEntity(MAP_TYPE);
+                .toEntity(MAP_TYPE));
     }
 
     @PostMapping("/{taskId}/human-input")
@@ -152,14 +170,16 @@ public class TaskProxyController {
             @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID taskId,
             @RequestBody Map<String, Object> response) {
-        return agentRuntimeClient.post()
+        return iamPep.require(tenantId, userId, IamActions.AGENT_RUNTIME_AGENT_RUN,
+                        ResourceArn.agentRuntimeTask(tenantId, taskId))
+                .then(agentRuntimeClient.post()
                 .uri("/api/internal/v1/tasks/{taskId}/human-input", taskId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .bodyValue(response)
                 .retrieve()
                 .toBodilessEntity()
-                .map(e -> ResponseEntity.status(e.getStatusCode()).<Void>build());
+                .map(e -> ResponseEntity.status(e.getStatusCode()).<Void>build()));
     }
 
     @GetMapping(value = "/{taskId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -167,13 +187,15 @@ public class TaskProxyController {
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID taskId) {
-        return agentRuntimeClient.get()
+        return iamPep.require(tenantId, userId, IamActions.AGENT_RUNTIME_AGENT_RUN,
+                        ResourceArn.agentRuntimeTask(tenantId, taskId))
+                .thenMany(agentRuntimeClient.get()
                 .uri("/api/internal/v1/tasks/{taskId}/events", taskId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .accept(MediaType.TEXT_EVENT_STREAM)
                 .retrieve()
-                .bodyToFlux(new ParameterizedTypeReference<ServerSentEvent<Map<String, Object>>>() {});
+                .bodyToFlux(new ParameterizedTypeReference<ServerSentEvent<Map<String, Object>>>() {}));
     }
 
     @GetMapping("/{taskId}/timeline")
@@ -181,12 +203,14 @@ public class TaskProxyController {
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID taskId) {
-        return agentRuntimeClient.get()
+        return iamPep.require(tenantId, userId, IamActions.AGENT_RUNTIME_AGENT_RUN,
+                        ResourceArn.agentRuntimeTask(tenantId, taskId))
+                .then(agentRuntimeClient.get()
                 .uri("/api/internal/v1/tasks/{taskId}/timeline", taskId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .retrieve()
-                .toEntity(MAP_TYPE);
+                .toEntity(MAP_TYPE));
     }
 
     @GetMapping("/{taskId}/environment")
@@ -194,11 +218,38 @@ public class TaskProxyController {
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID taskId) {
-        return agentRuntimeClient.get()
+        return iamPep.require(tenantId, userId, IamActions.AGENT_RUNTIME_AGENT_RUN,
+                        ResourceArn.agentRuntimeTask(tenantId, taskId))
+                .then(agentRuntimeClient.get()
                 .uri("/api/internal/v1/tasks/{taskId}/environment", taskId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .retrieve()
-                .toEntity(MAP_TYPE);
+                .toEntity(MAP_TYPE));
+    }
+
+    private static String submitTaskResourceArn(UUID tenantId, Map<String, Object> request) {
+        UUID agentId = parseAgentId(request);
+        return agentId != null
+                ? ResourceArn.agentRuntimeAgent(tenantId, agentId)
+                : ResourceArn.agentRuntimeAgentWildcard(tenantId);
+    }
+
+    private static UUID parseAgentId(Map<String, Object> request) {
+        Object raw = request != null ? request.get("agentId") : null;
+        if (raw == null) {
+            return null;
+        }
+        if (raw instanceof UUID u) {
+            return u;
+        }
+        if (raw instanceof String s) {
+            try {
+                return UUID.fromString(s);
+            } catch (IllegalArgumentException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 }

@@ -115,6 +115,45 @@ class RunServiceTest {
     }
 
     @Test
+    void getRunForUser_delegatesToRepo() {
+        RunEntity entity = RunEntity.builder()
+                .id(RUN_ID)
+                .sessionId(SESSION_ID)
+                .tenantId(TENANT_ID)
+                .userId(USER_ID)
+                .status("running")
+                .routeType("simple_chat")
+                .build();
+
+        when(runRepository.findByIdAndTenantIdAndUserId(RUN_ID, TENANT_ID, USER_ID)).thenReturn(Mono.just(entity));
+
+        StepVerifier.create(runService.getRunForUser(RUN_ID, TENANT_ID, USER_ID))
+                .assertNext(run -> assertThat(run.getId()).isEqualTo(RUN_ID))
+                .verifyComplete();
+
+        verify(runRepository).findByIdAndTenantIdAndUserId(RUN_ID, TENANT_ID, USER_ID);
+    }
+
+    @Test
+    void listRunsForUser_returnsPageResponse() {
+        RunEntity e1 = RunEntity.builder().id(UUID.randomUUID()).sessionId(SESSION_ID).tenantId(TENANT_ID).userId(USER_ID).build();
+
+        when(runRepository.countBySessionAndUser(SESSION_ID, TENANT_ID, USER_ID)).thenReturn(Mono.just(1L));
+        when(runRepository.findBySessionAndUser(eq(SESSION_ID), eq(TENANT_ID), eq(USER_ID), eq(20), anyLong()))
+                .thenReturn(Flux.just(e1));
+
+        StepVerifier.create(runService.listRunsForUser(SESSION_ID, TENANT_ID, USER_ID, 20, 0))
+                .assertNext(page -> {
+                    assertThat(page.getTotalCount()).isEqualTo(1);
+                    assertThat(page.getItems()).hasSize(1);
+                })
+                .verifyComplete();
+
+        verify(runRepository).countBySessionAndUser(SESSION_ID, TENANT_ID, USER_ID);
+        verify(runRepository).findBySessionAndUser(SESSION_ID, TENANT_ID, USER_ID, 20, 0);
+    }
+
+    @Test
     void markRunning_delegatesToRepo() {
         when(runRepository.markRunning(any(), any())).thenReturn(Mono.empty());
 

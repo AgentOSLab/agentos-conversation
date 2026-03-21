@@ -75,7 +75,7 @@ public class MessageOrchestrator {
      */
     public Mono<RunResponse> createAndExecuteRun(UUID tenantId, UUID userId,
                                                   UUID sessionId, CreateRunRequest request) {
-        return sessionService.getSession(tenantId, sessionId)
+        return sessionService.getSessionForUser(tenantId, sessionId, userId)
                 .switchIfEmpty(Mono.error(new RuntimeException("Session not found: " + sessionId)))
                 .flatMap(session -> {
                     ConversationMessageEntity userMsg = ConversationMessageEntity.builder()
@@ -535,8 +535,9 @@ public class MessageOrchestrator {
      * Cancel a running run. Propagates cancellation to Agent Runtime if applicable.
      * Works from any instance — cancel event published via Redis.
      */
-    public Mono<RunResponse> cancelRun(UUID runId, UUID tenantId) {
-        return runService.getRun(runId, tenantId)
+    public Mono<RunResponse> cancelRun(UUID runId, UUID sessionId, UUID tenantId, UUID userId) {
+        return runService.getRunForUser(runId, tenantId, userId)
+                .filter(run -> sessionId.equals(run.getSessionId()))
                 .switchIfEmpty(Mono.error(new RuntimeException("Run not found: " + runId)))
                 .flatMap(run -> {
                     if ("completed".equals(run.getStatus()) || "cancelled".equals(run.getStatus())
@@ -556,7 +557,7 @@ public class MessageOrchestrator {
                     return cancelTask
                             .then(runService.cancelRun(runId))
                             .then(sseAggregator.publishRunCancelled(runId))
-                            .then(runService.getRun(runId, tenantId))
+                            .then(runService.getRunForUser(runId, tenantId, userId))
                             .map(RunResponse::fromEntity);
                 });
     }
@@ -566,9 +567,10 @@ public class MessageOrchestrator {
      * Works from any instance — Agent Runtime receives input via HTTP,
      * then publishes events to Redis which any Conversation instance consumes.
      */
-    public Mono<Void> submitHumanInput(UUID runId, UUID tenantId, UUID userId,
+    public Mono<Void> submitHumanInput(UUID runId, UUID sessionId, UUID tenantId, UUID userId,
                                         SubmitRunInputRequest request) {
-        return runService.getRun(runId, tenantId)
+        return runService.getRunForUser(runId, tenantId, userId)
+                .filter(run -> sessionId.equals(run.getSessionId()))
                 .switchIfEmpty(Mono.error(new RuntimeException("Run not found: " + runId)))
                 .flatMap(run -> {
                     if (run.getTaskId() == null) {
@@ -590,7 +592,8 @@ public class MessageOrchestrator {
      * Retry a failed run by creating a new run with the same input message.
      */
     public Mono<RunResponse> retryRun(UUID runId, UUID sessionId, UUID tenantId, UUID userId) {
-        return runService.getRun(runId, tenantId)
+        return runService.getRunForUser(runId, tenantId, userId)
+                .filter(run -> sessionId.equals(run.getSessionId()))
                 .switchIfEmpty(Mono.error(new RuntimeException("Run not found: " + runId)))
                 .flatMap(originalRun -> {
                     if (!"failed".equals(originalRun.getStatus())) {
@@ -599,14 +602,17 @@ public class MessageOrchestrator {
 
                     return runService.createRun(sessionId, tenantId, userId,
                                     originalRun.getRouteType(), originalRun.getInputMessageId())
-                            .flatMap(newRun -> sessionService.getSession(tenantId, sessionId)
+                            .flatMap(newRun -> sessionService.getSessionForUser(tenantId, sessionId, userId)
+                                    .switchIfEmpty(Mono.error(new RuntimeException("Session not found: " + sessionId)))
                                     .flatMap(session -> {
                                         RouteDecision route = RouteDecision.builder()
                                                 .routeType(fromRouteType(originalRun.getRouteType()))
                                                 .interactionMode(session.getInteractionMode())
                                                 .build();
 
-                                        return sessionService.getMessageById(originalRun.getInputMessageId())
+                                        return sessionService.getMessageForSession(originalRun.getInputMessageId(), sessionId)
+                                                .switchIfEmpty(Mono.error(new RuntimeException(
+                                                        "Input message not found for session: " + sessionId)))
                                                 .flatMap(msg -> {
                                                     kickOffExecution(newRun, session, route, msg.getContent(), tenantId, userId);
                                                     return Mono.just(RunResponse.fromEntity(newRun));

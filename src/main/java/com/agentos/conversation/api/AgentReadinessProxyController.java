@@ -1,5 +1,8 @@
 package com.agentos.conversation.api;
 
+import com.agentos.common.iam.IamActions;
+import com.agentos.common.iam.ResourceArn;
+import com.agentos.conversation.security.IamPep;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.ParameterizedTypeReference;
@@ -15,7 +18,7 @@ import java.util.UUID;
  * Proxies agent readiness checks to Agent Runtime's internal endpoint
  * ({@code /api/internal/v1/agent-readiness/**}).
  *
- * <p>See {@link TaskProxyController} for the layer-boundary rationale.
+ * <p>See {@link TaskProxyController} for the layer-boundary rationale and PEP notes.
  */
 @RestController
 @RequestMapping("/api/v1/agent-readiness")
@@ -25,6 +28,7 @@ public class AgentReadinessProxyController {
     private static final ParameterizedTypeReference<Map<String, Object>> MAP_TYPE =
             new ParameterizedTypeReference<>() {};
 
+    private final IamPep iamPep;
     private final @Qualifier("agentRuntimeWebClient") WebClient agentRuntimeClient;
 
     @GetMapping("/{agentId}")
@@ -32,11 +36,13 @@ public class AgentReadinessProxyController {
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID agentId) {
-        return agentRuntimeClient.get()
+        return iamPep.require(tenantId, userId, IamActions.HUB_AGENT_READ,
+                        ResourceArn.hubAgent(tenantId, agentId))
+                .then(agentRuntimeClient.get()
                 .uri("/api/internal/v1/agent-readiness/{agentId}", agentId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .retrieve()
-                .toEntity(MAP_TYPE);
+                .toEntity(MAP_TYPE));
     }
 }

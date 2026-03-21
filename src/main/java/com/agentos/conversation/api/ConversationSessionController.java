@@ -186,7 +186,7 @@ public class ConversationSessionController {
                 .then(sessionService.getSessionForUser(tenantId, sessionId, userId))
                 .switchIfEmpty(Mono.error(new org.springframework.web.server.ResponseStatusException(
                         org.springframework.http.HttpStatus.NOT_FOUND, "Session not found")))
-                .then(sessionService.pinMessage(messageId, pinned))
+                .then(sessionService.pinMessage(sessionId, messageId, pinned))
                 .then(Mono.just(ResponseEntity.ok().<Void>build()));
     }
 
@@ -202,6 +202,9 @@ public class ConversationSessionController {
 
         return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_READ,
                         ResourceArn.conversationSession(tenantId, sessionId))
-                .thenMany(messageOrchestrator.streamSessionEvents(sessionId));
+                .then(sessionService.getSessionForUser(tenantId, sessionId, userId))
+                .switchIfEmpty(Mono.error(new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "Session not found")))
+                .flatMapMany(ignored -> messageOrchestrator.streamSessionEvents(sessionId));
     }
 }
