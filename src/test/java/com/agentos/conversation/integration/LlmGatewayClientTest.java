@@ -116,16 +116,10 @@ class LlmGatewayClientTest {
 
     @Test
     void chat_withoutTenantId() {
-        ClientResponse response = ClientResponse.create(HttpStatus.OK)
-                .header("Content-Type", "application/json")
-                .body("{\"choices\":[]}")
-                .build();
-        when(exchangeFunction.exchange(any())).thenReturn(Mono.just(response));
-
         Map<String, Object> requestBody = Map.of("messages", List.of(Map.of("role", "user", "content", "Hi")));
 
         StepVerifier.create(client.chat(requestBody))
-                .assertNext(map -> assertThat(map).containsKey("choices"))
-                .verifyComplete();
+                .expectError(IllegalArgumentException.class)
+                .verify();
     }
 }

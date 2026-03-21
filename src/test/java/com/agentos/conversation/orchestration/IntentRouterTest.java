@@ -153,6 +153,26 @@ class IntentRouterTest {
             RouteDecision d = router.route("你好", defaultSession, tenantId).block();
             assertThat(d.getRouteType()).isEqualTo(RouteType.SIMPLE_CHAT);
         }
+
+        @Test
+        @DisplayName("bound agent + SIMPLE_CHAT session -> agent_task (never simple_chat)")
+        void boundAgent_forcesAgentTask() {
+            ConversationSessionEntity session = sessionEntity("SIMPLE_CHAT", "INTERACTIVE");
+            session.setBoundEntityId(UUID.randomUUID());
+            session.setBoundEntityType("agent");
+            RouteDecision d = router.route("Hi!", session, tenantId).block();
+            assertThat(d.getRouteType()).isEqualTo(RouteType.AGENT_TASK);
+        }
+
+        @Test
+        @DisplayName("bound agent with blank entity type (legacy) -> agent_task")
+        void boundAgent_blankType_forcesAgentTask() {
+            ConversationSessionEntity session = sessionEntity("SIMPLE_CHAT", "INTERACTIVE");
+            session.setBoundEntityId(UUID.randomUUID());
+            session.setBoundEntityType(null);
+            RouteDecision d = router.route("What is 2+2?", session, tenantId).block();
+            assertThat(d.getRouteType()).isEqualTo(RouteType.AGENT_TASK);
+        }
     }
 
     @Nested

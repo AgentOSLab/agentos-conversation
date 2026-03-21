@@ -93,3 +93,7 @@ agentos:
     # SSE event buffer TTL in Redis. Must exceed the longest expected agent task
     # execution time to allow clients to replay missed events on reconnect.
     event-buffer-ttl-minutes: ${SSE_EVENT_BUFFER_TTL_MINUTES:60}
+    # Max duration for a single GET .../runs/{id}/events connection; then run_failed (sse_stream_timeout).
+    stream-max-duration-minutes: ${SSE_STREAM_MAX_DURATION_MINUTES:120}
+    # SSE comment keepalive interval (seconds). Set 0 to disable.
+    heartbeat-interval-seconds: ${SSE_HEARTBEAT_INTERVAL_SECONDS:30}

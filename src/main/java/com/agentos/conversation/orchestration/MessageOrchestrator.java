@@ -294,12 +294,17 @@ public class MessageOrchestrator {
                     String result = conversationPlatformToolDispatcher.dispatch(toolName, args, toolCtx)
                             .block(platformToolDispatchTimeout);
 
+                    String resultPreview = result == null ? "" : result;
+                    if (resultPreview.length() > 2048) {
+                        resultPreview = resultPreview.substring(0, 2048) + "…";
+                    }
+
                     // Publish tool_result event
                     sseAggregator.publishEvent(runId, sessionId, "tool_result",
                             RunEvent.DisplayMetadata.builder()
                                     .category("tool").priority("info")
                                     .summary(toolName + " completed").build(),
-                            Map.of("toolName", toolName, "callId", callId)).block();
+                            Map.of("toolName", toolName, "callId", callId, "resultPreview", resultPreview)).block();
 
                     messages.add(Map.of(
                             "role", "tool",

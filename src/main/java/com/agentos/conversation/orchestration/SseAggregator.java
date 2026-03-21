@@ -23,6 +23,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Multi-instance-safe event aggregator. All state lives in Redis:
@@ -91,6 +93,21 @@ public class SseAggregator {
      */
     @Value("${agentos.sse.event-buffer-ttl-minutes:60}")
     private int eventBufferTtlMinutes;
+
+    /**
+     * Maximum wall-clock time a client may hold a single Run SSE connection. When elapsed without
+     * a natural {@code done} event, the run is failed with {@code sse_stream_timeout} and terminal
+     * events are replayed from Redis so the client receives {@code error}/{@code run_failed}/{@code done}.
+     */
+    @Value("${agentos.sse.stream-max-duration-minutes:120}")
+    private int streamMaxDurationMinutes;
+
+    /**
+     * Interval for SSE comment keep-alives on Run streams ({@code :keepalive}). Zero disables.
+     * Helps proxies and CDNs detect liveness during long agent runs with sparse events.
+     */
+    @Value("${agentos.sse.heartbeat-interval-seconds:30}")
+    private int heartbeatIntervalSeconds;
 
     private static final Set<String> TERMINAL_TASK_EVENTS = Set.of(
             "task.completed", "task.failed", "task.cancelled", "task.timeout");
@@ -351,6 +368,10 @@ public class SseAggregator {
     /**
      * Stream SSE events for a run. Any instance can serve this — all data
      * comes from Redis (replay from Sorted Set, live from Pub/Sub).
+     *
+     * <p>Bounded by {@link #streamMaxDurationMinutes}: if no {@code done} within that window,
+     * {@link #publishErrorAndFail} is invoked and new terminal events are replayed for this client.
+     * Optional comment heartbeats are controlled by {@link #heartbeatIntervalSeconds}.
      */
     public Flux<ServerSentEvent<String>> streamRunEvents(UUID runId, UUID sessionId,
                                                           UUID tenantId, UUID userId,
@@ -365,13 +386,56 @@ public class SseAggregator {
                 .mapNotNull(this::deserializeEvent)
                 .filter(event -> extractSequence(event.getEventId()) > startSeq);
 
-        return Flux.concat(replayEvents, liveEvents)
-                .takeUntil(event -> "done".equals(event.getType()))
-                .map(event -> ServerSentEvent.<String>builder()
-                        .id(event.getEventId())
-                        .event(event.getType())
-                        .data(toJson(event))
-                        .build())
+        AtomicBoolean sawDone = new AtomicBoolean(false);
+        AtomicLong lastSeq = new AtomicLong(startSeq);
+
+        Flux<RunEvent> source = Flux.concat(replayEvents, liveEvents)
+                .doOnNext(event -> {
+                    lastSeq.updateAndGet(cur -> Math.max(cur, extractSequence(event.getEventId())));
+                    if ("done".equals(event.getType())) {
+                        sawDone.set(true);
+                    }
+                });
+
+        Flux<RunEvent> untilDone = source.takeUntil(event -> "done".equals(event.getType()));
+
+        int capMinutes = Math.max(1, streamMaxDurationMinutes);
+        Flux<RunEvent> capped = untilDone.takeUntilOther(Mono.delay(Duration.ofMinutes(capMinutes)));
+
+        Flux<RunEvent> timeoutTail = Flux.defer(() -> {
+            if (sawDone.get()) {
+                return Flux.empty();
+            }
+            log.warn("SSE stream exceeded max duration ({} min) for run {} — failing run with sse_stream_timeout",
+                    capMinutes, runId);
+            return publishErrorAndFail(runId, sessionId, "sse_stream_timeout",
+                            "Run event stream exceeded the configured maximum duration; the connection was closed.")
+                    .thenMany(replayFromRedis(runId, lastSeq.get()));
+        });
+
+        // share() — dataSse and keepAlive's takeUntilOther(runEvents.then()) must not double-subscribe
+        // (would duplicate timeout handling / Redis publishes).
+        Flux<RunEvent> runEvents = capped.concatWith(timeoutTail).share();
+
+        Flux<ServerSentEvent<String>> dataSse = runEvents.map(event -> ServerSentEvent.<String>builder()
+                .id(event.getEventId())
+                .event(event.getType())
+                .data(toJson(event))
+                .build());
+
+        if (heartbeatIntervalSeconds <= 0) {
+            return dataSse
+                    .doOnSubscribe(s -> log.debug("SSE stream opened for run {} (lastEventId={})", runId, lastEventId))
+                    .doOnCancel(() -> log.debug("SSE client disconnected for run {}", runId));
+        }
+
+        Flux<ServerSentEvent<String>> keepAlive = Flux.interval(Duration.ofSeconds(heartbeatIntervalSeconds))
+                .takeUntilOther(runEvents.then())
+                .map(tick -> ServerSentEvent.<String>builder()
+                        .comment("keepalive")
+                        .build());
+
+        return Flux.merge(dataSse, keepAlive)
                 .doOnSubscribe(s -> log.debug("SSE stream opened for run {} (lastEventId={})", runId, lastEventId))
                 .doOnCancel(() -> log.debug("SSE client disconnected for run {}", runId));
     }

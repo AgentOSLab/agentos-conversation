@@ -2,6 +2,7 @@ package com.agentos.conversation.contract;
 
 import com.agentos.conversation.api.ConversationSessionController;
 import com.agentos.conversation.config.SecurityConfig;
+import com.agentos.conversation.security.IamPep;
 import com.agentos.conversation.model.dto.*;
 import com.agentos.conversation.model.entity.ConversationSessionEntity;
 import com.agentos.conversation.orchestration.MessageOrchestrator;
@@ -52,6 +53,13 @@ class SessionContractTest {
 
     @MockBean private ConversationSessionService sessionService;
     @MockBean private MessageOrchestrator messageOrchestrator;
+    @MockBean private IamPep iamPep;
+
+    @BeforeEach
+    void stubIamPep() {
+        when(iamPep.require(any(UUID.class), any(UUID.class), anyString(), anyString()))
+                .thenReturn(Mono.empty());
+    }
 
     /** Simulates API Gateway trusted headers so {@link com.agentos.common.reactive.ReactiveTenantContextFilter} can populate security context. */
     private void gatewayTrustHeaders(HttpHeaders h) {
@@ -129,12 +137,13 @@ class SessionContractTest {
     @Test @Order(3)
     @DisplayName("GET /api/v1/sessions/{id} — 200 OK for existing session")
     void getSession_returns200() {
-        when(sessionService.getSession(TENANT_ID, SESSION_ID))
+        when(sessionService.getSessionForUser(TENANT_ID, SESSION_ID, USER_ID))
                 .thenReturn(Mono.just(sessionEntity("AGENT_CHAT", "active")));
 
         webTestClient.get().uri("/api/v1/sessions/" + SESSION_ID)
                 .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
+                .header("X-User-Id", USER_ID.toString())
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody()
@@ -145,12 +154,13 @@ class SessionContractTest {
     @Test @Order(4)
     @DisplayName("GET /api/v1/sessions/{id} — 404 Not Found for missing session")
     void getSession_notFound_returns404() {
-        when(sessionService.getSession(eq(TENANT_ID), any(UUID.class)))
+        when(sessionService.getSessionForUser(eq(TENANT_ID), any(UUID.class), eq(USER_ID)))
                 .thenReturn(Mono.empty());
 
         webTestClient.get().uri("/api/v1/sessions/00000000-0000-0000-0000-999999999999")
                 .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
+                .header("X-User-Id", USER_ID.toString())
                 .exchange()
                 .expectStatus().isNotFound();
     }
@@ -204,12 +214,13 @@ class SessionContractTest {
     void updateTitle_returns200() throws Exception {
         ConversationSessionEntity updated = sessionEntity("AGENT_CHAT", "active");
         updated.setTitle("New Title");
-        when(sessionService.updateTitle(TENANT_ID, SESSION_ID, "New Title"))
+        when(sessionService.updateTitle(TENANT_ID, SESSION_ID, USER_ID, "New Title"))
                 .thenReturn(Mono.just(updated));
 
         webTestClient.patch().uri("/api/v1/sessions/" + SESSION_ID + "/title")
                 .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
+                .header("X-User-Id", USER_ID.toString())
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(objectMapper.writeValueAsString(Map.of("title", "New Title")))
                 .exchange()
@@ -224,12 +235,13 @@ class SessionContractTest {
     @DisplayName("POST /api/v1/sessions/{id}/complete — 200 OK transitions to completed")
     void completeSession_returns200() {
         ConversationSessionEntity completed = sessionEntity("AGENT_CHAT", "completed");
-        when(sessionService.updateSessionStatus(TENANT_ID, SESSION_ID, "completed"))
+        when(sessionService.updateSessionStatus(TENANT_ID, SESSION_ID, USER_ID, "completed"))
                 .thenReturn(Mono.just(completed));
 
         webTestClient.post().uri("/api/v1/sessions/" + SESSION_ID + "/complete")
                 .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
+                .header("X-User-Id", USER_ID.toString())
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody()
@@ -242,12 +254,13 @@ class SessionContractTest {
     @DisplayName("POST /api/v1/sessions/{id}/archive — 200 OK transitions to archived")
     void archiveSession_returns200() {
         ConversationSessionEntity archived = sessionEntity("AGENT_CHAT", "archived");
-        when(sessionService.updateSessionStatus(TENANT_ID, SESSION_ID, "archived"))
+        when(sessionService.updateSessionStatus(TENANT_ID, SESSION_ID, USER_ID, "archived"))
                 .thenReturn(Mono.just(archived));
 
         webTestClient.post().uri("/api/v1/sessions/" + SESSION_ID + "/archive")
                 .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
+                .header("X-User-Id", USER_ID.toString())
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody()
@@ -261,11 +274,15 @@ class SessionContractTest {
     void getMessages_returns200() {
         PageResponse<com.agentos.conversation.model.entity.ConversationMessageEntity> emptyPage =
                 PageResponse.of(Collections.emptyList(), null, 0L);
+        when(sessionService.getSessionForUser(TENANT_ID, SESSION_ID, USER_ID))
+                .thenReturn(Mono.just(sessionEntity("AGENT_CHAT", "active")));
         when(sessionService.getMessagesPaged(SESSION_ID, 50, 0L))
                 .thenReturn(Mono.just(emptyPage));
 
         webTestClient.get().uri("/api/v1/sessions/" + SESSION_ID + "/messages")
                 .headers(this::gatewayTrustHeaders)
+                .header("X-Tenant-Id", TENANT_ID.toString())
+                .header("X-User-Id", USER_ID.toString())
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody()
@@ -279,7 +296,7 @@ class SessionContractTest {
     @DisplayName("PATCH /api/v1/sessions/{id}/mcp-tools — 200 OK updates tool config")
     void updateMcpToolConfig_returns200() throws Exception {
         ConversationSessionEntity updated = sessionEntity("AGENT_CHAT", "active");
-        when(sessionService.updateMcpToolConfig(eq(TENANT_ID), eq(SESSION_ID), any(Map.class)))
+        when(sessionService.updateMcpToolConfig(eq(TENANT_ID), eq(SESSION_ID), eq(USER_ID), any(Map.class)))
                 .thenReturn(Mono.just(updated));
 
         Map<String, Object> config = Map.of("enabledSkillPackageIds", Collections.emptyList());
@@ -287,6 +304,7 @@ class SessionContractTest {
         webTestClient.patch().uri("/api/v1/sessions/" + SESSION_ID + "/mcp-tools")
                 .headers(this::gatewayTrustHeaders)
                 .header("X-Tenant-Id", TENANT_ID.toString())
+                .header("X-User-Id", USER_ID.toString())
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(objectMapper.writeValueAsString(config))
                 .exchange()
@@ -352,12 +370,16 @@ class SessionContractTest {
                 .data("{\"stepId\":\"step1\"}")
                 .build();
 
+        when(sessionService.getSessionForUser(TENANT_ID, SESSION_ID, USER_ID))
+                .thenReturn(Mono.just(sessionEntity("AGENT_CHAT", "active")));
         when(messageOrchestrator.streamSessionEvents(SESSION_ID))
                 .thenReturn(Flux.just(event));
 
         webTestClient.get()
                 .uri("/api/v1/sessions/" + SESSION_ID + "/events")
                 .headers(this::gatewayTrustHeaders)
+                .header("X-Tenant-Id", TENANT_ID.toString())
+                .header("X-User-Id", USER_ID.toString())
                 .accept(MediaType.TEXT_EVENT_STREAM)
                 .exchange()
                 .expectStatus().isOk()
@@ -367,12 +389,16 @@ class SessionContractTest {
     @Test @Order(15)
     @DisplayName("GET /api/v1/sessions/{id}/events — 200 OK with empty stream when no events pending")
     void streamSessionEvents_emptyStream_returns200() {
+        when(sessionService.getSessionForUser(TENANT_ID, SESSION_ID, USER_ID))
+                .thenReturn(Mono.just(sessionEntity("AGENT_CHAT", "active")));
         when(messageOrchestrator.streamSessionEvents(SESSION_ID))
                 .thenReturn(Flux.empty());
 
         webTestClient.get()
                 .uri("/api/v1/sessions/" + SESSION_ID + "/events")
                 .headers(this::gatewayTrustHeaders)
+                .header("X-Tenant-Id", TENANT_ID.toString())
+                .header("X-User-Id", USER_ID.toString())
                 .accept(MediaType.TEXT_EVENT_STREAM)
                 .exchange()
                 .expectStatus().isOk();

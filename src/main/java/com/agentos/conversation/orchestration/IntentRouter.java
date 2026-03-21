@@ -125,6 +125,18 @@ public class IntentRouter {
                     .build());
         }
 
+        // Explicit Hub binding: when the session is tied to an agent, never route to SIMPLE_CHAT.
+        // (User selected an agent — execution must go through Agent Runtime, not direct LLM.)
+        if (session.getBoundEntityId() != null && isAgentBinding(session)) {
+            log.info("Intent routing decision: intent=AGENT_TASK reason=bound_agent sessionId={} boundEntityId={}",
+                    session.getId(), session.getBoundEntityId());
+            return Mono.just(RouteDecision.builder()
+                    .routeType(RouteType.AGENT_TASK)
+                    .interactionMode(session.getInteractionMode() != null ? session.getInteractionMode() : "INTERACTIVE")
+                    .complexityScore(0.85)
+                    .build());
+        }
+
         // GAP-RT-001 fix: attempt LLM pre-classification, fall back to lexical scoring on failure
         return intentClassifierService.classify(userMessage, tenantId)
                 .map(llmResult -> {
@@ -173,6 +185,15 @@ public class IntentRouter {
      *   - Question patterns (pure question -> simple)
      *   - Greeting patterns (greeting -> simple)
      */
+    /**
+     * Agent-bound session: {@code boundEntityType} is absent/blank (legacy) or explicitly {@code agent}.
+     * Other bound types (e.g. workflow) are not forced here — they rely on session type or classifier.
+     */
+    private static boolean isAgentBinding(ConversationSessionEntity session) {
+        String t = session.getBoundEntityType();
+        return t == null || t.isBlank() || "agent".equalsIgnoreCase(t);
+    }
+
     double computeComplexityScore(String message) {
         if (message == null || message.isBlank()) return 0.0;
 
