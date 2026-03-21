@@ -71,7 +71,7 @@ public class ConversationSessionController {
         log.debug("Getting session: sessionId={} tenant={}", sessionId, tenantId);
         return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_READ,
                         ResourceArn.conversationSession(tenantId, sessionId))
-                .then(sessionService.getSession(tenantId, sessionId))
+                .then(sessionService.getSessionForUser(tenantId, sessionId, userId))
                 .map(ConversationSessionResponse::fromEntity)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
@@ -86,7 +86,7 @@ public class ConversationSessionController {
 
         return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_WRITE,
                         ResourceArn.conversationSession(tenantId, sessionId))
-                .then(sessionService.updateTitle(tenantId, sessionId, body.get("title")))
+                .then(sessionService.updateTitle(tenantId, sessionId, userId, body.get("title")))
                 .map(ConversationSessionResponse::fromEntity)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
@@ -101,7 +101,7 @@ public class ConversationSessionController {
 
         return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_WRITE,
                         ResourceArn.conversationSession(tenantId, sessionId))
-                .then(sessionService.updateMcpToolConfig(tenantId, sessionId, config))
+                .then(sessionService.updateMcpToolConfig(tenantId, sessionId, userId, config))
                 .map(ConversationSessionResponse::fromEntity)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
@@ -116,7 +116,7 @@ public class ConversationSessionController {
         log.info("Completing session: sessionId={} tenant={}", sessionId, tenantId);
         return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_WRITE,
                         ResourceArn.conversationSession(tenantId, sessionId))
-                .then(sessionService.updateSessionStatus(tenantId, sessionId, "completed"))
+                .then(sessionService.updateSessionStatus(tenantId, sessionId, userId, "completed"))
                 .map(ConversationSessionResponse::fromEntity)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
@@ -131,7 +131,7 @@ public class ConversationSessionController {
         log.info("Archiving session: sessionId={} tenant={}", sessionId, tenantId);
         return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_WRITE,
                         ResourceArn.conversationSession(tenantId, sessionId))
-                .then(sessionService.updateSessionStatus(tenantId, sessionId, "archived"))
+                .then(sessionService.updateSessionStatus(tenantId, sessionId, userId, "archived"))
                 .map(ConversationSessionResponse::fromEntity)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
@@ -165,6 +165,9 @@ public class ConversationSessionController {
 
         return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_READ,
                         ResourceArn.conversationSession(tenantId, sessionId))
+                .then(sessionService.getSessionForUser(tenantId, sessionId, userId))
+                .switchIfEmpty(Mono.error(new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "Session not found")))
                 .then(sessionService.getMessagesPaged(sessionId, limit, offset))
                 .map(page -> page.map(ConversationMessageResponse::fromEntity))
                 .map(ResponseEntity::ok);
@@ -180,6 +183,9 @@ public class ConversationSessionController {
 
         return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_WRITE,
                         ResourceArn.conversationSession(tenantId, sessionId))
+                .then(sessionService.getSessionForUser(tenantId, sessionId, userId))
+                .switchIfEmpty(Mono.error(new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "Session not found")))
                 .then(sessionService.pinMessage(messageId, pinned))
                 .then(Mono.just(ResponseEntity.ok().<Void>build()));
     }

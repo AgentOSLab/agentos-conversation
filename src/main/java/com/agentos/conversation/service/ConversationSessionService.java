@@ -73,9 +73,23 @@ public class ConversationSessionService {
                         .thenReturn(s));
     }
 
+    /**
+     * Fetch a session without ownership check — for internal/admin use only.
+     * Prefer {@link #getSessionForUser} for user-facing endpoints.
+     */
     public Mono<ConversationSessionEntity> getSession(UUID tenantId, UUID sessionId) {
         return sessionRepository.findByTenantIdAndId(tenantId, sessionId)
                 .doOnSuccess(s -> { if (s != null) log.debug("Session retrieved: sessionId={}", sessionId); });
+    }
+
+    /**
+     * Fetch a session with ABAC ownership check: tenantId + sessionId + userId must all match.
+     * Returns empty if the session does not belong to the calling user, which the controller
+     * maps to 404 (preventing session enumeration by other tenant members).
+     */
+    public Mono<ConversationSessionEntity> getSessionForUser(UUID tenantId, UUID sessionId, UUID userId) {
+        return sessionRepository.findByTenantIdAndIdAndUserId(tenantId, sessionId, userId)
+                .doOnSuccess(s -> { if (s != null) log.debug("Session retrieved for user: sessionId={} userId={}", sessionId, userId); });
     }
 
     public Mono<PageResponse<ConversationSessionEntity>> listSessions(UUID tenantId, UUID userId,
@@ -87,8 +101,8 @@ public class ConversationSessionService {
                         .map(items -> PageResponse.of(items, null, total)));
     }
 
-    public Mono<ConversationSessionEntity> updateSessionStatus(UUID tenantId, UUID sessionId, String status) {
-        return sessionRepository.findByTenantIdAndId(tenantId, sessionId)
+    public Mono<ConversationSessionEntity> updateSessionStatus(UUID tenantId, UUID sessionId, UUID userId, String status) {
+        return sessionRepository.findByTenantIdAndIdAndUserId(tenantId, sessionId, userId)
                 .flatMap(session -> {
                     session.setStatus(status);
                     session.setUpdatedAt(OffsetDateTime.now());
@@ -106,8 +120,8 @@ public class ConversationSessionService {
                 });
     }
 
-    public Mono<ConversationSessionEntity> updateTitle(UUID tenantId, UUID sessionId, String title) {
-        return sessionRepository.findByTenantIdAndId(tenantId, sessionId)
+    public Mono<ConversationSessionEntity> updateTitle(UUID tenantId, UUID sessionId, UUID userId, String title) {
+        return sessionRepository.findByTenantIdAndIdAndUserId(tenantId, sessionId, userId)
                 .flatMap(session -> {
                     session.setTitle(title);
                     session.setUpdatedAt(OffsetDateTime.now());
@@ -119,9 +133,9 @@ public class ConversationSessionService {
                         .thenReturn(session));
     }
 
-    public Mono<ConversationSessionEntity> updateMcpToolConfig(UUID tenantId, UUID sessionId,
+    public Mono<ConversationSessionEntity> updateMcpToolConfig(UUID tenantId, UUID sessionId, UUID userId,
                                                                 Map<String, Object> config) {
-        return sessionRepository.findByTenantIdAndId(tenantId, sessionId)
+        return sessionRepository.findByTenantIdAndIdAndUserId(tenantId, sessionId, userId)
                 .flatMap(session -> {
                     session.setMcpToolConfig(toJson(config));
                     session.setUpdatedAt(OffsetDateTime.now());

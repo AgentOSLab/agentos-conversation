@@ -100,7 +100,7 @@ public class MessageOrchestrator {
                                             // Auto-generate session title on first user message (fire-and-forget)
                                             if (session.getMessageCount() == 0
                                                     && (session.getTitle() == null || session.getTitle().isBlank())) {
-                                                generateSessionTitle(sessionId, tenantId, request.getContent())
+                                                generateSessionTitle(sessionId, tenantId, userId, request.getContent())
                                                         .subscribe(
                                                                 v -> {},
                                                                 e -> log.warn("Auto-title generation failed for session {}: {}",
@@ -648,7 +648,7 @@ public class MessageOrchestrator {
      * Fire a non-streaming LLM call to generate a short title from the first user message,
      * then persist it on the session. Designed to be called fire-and-forget.
      */
-    private Mono<Void> generateSessionTitle(UUID sessionId, UUID tenantId, String firstMessage) {
+    private Mono<Void> generateSessionTitle(UUID sessionId, UUID tenantId, UUID userId, String firstMessage) {
         List<Map<String, Object>> messages = List.of(
                 Map.of("role", "system", "content",
                         "Generate a short, descriptive title (maximum 60 characters) for a conversation that starts with the following user message. Return only the title text, no quotes, no punctuation at the end."),
@@ -664,7 +664,7 @@ public class MessageOrchestrator {
                             title = title.substring(0, 60);
                         }
                         log.debug("Auto-generated title for session {}: \"{}\"", sessionId, title);
-                        return sessionService.updateTitle(tenantId, sessionId, title).then();
+                        return sessionService.updateTitle(tenantId, sessionId, userId, title).then();
                     }
                     return Mono.empty();
                 })

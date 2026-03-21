@@ -25,9 +25,9 @@ public class AgentRuntimeClient {
     }
 
     public Mono<Map<String, Object>> submitTask(Map<String, Object> taskRequest, UUID tenantId, UUID userId) {
-        log.debug("Agent Runtime call: endpoint=/api/v1/tasks tenant={} userId={}", tenantId, userId);
+        log.debug("Agent Runtime call: endpoint=/api/internal/v1/tasks tenant={} userId={}", tenantId, userId);
         return webClient.post()
-                .uri("/api/v1/tasks")
+                .uri("/api/internal/v1/tasks")
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .bodyValue(taskRequest)
@@ -41,9 +41,9 @@ public class AgentRuntimeClient {
     }
 
     public Mono<Map<String, Object>> getTask(UUID taskId, UUID tenantId) {
-        log.debug("Agent Runtime call: endpoint=/api/v1/tasks/{}", taskId);
+        log.debug("Agent Runtime call: endpoint=/api/internal/v1/tasks/{}", taskId);
         return webClient.get()
-                .uri("/api/v1/tasks/{taskId}", taskId)
+                .uri("/api/internal/v1/tasks/{taskId}", taskId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .retrieve()
                 .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
@@ -53,7 +53,7 @@ public class AgentRuntimeClient {
     public Mono<Map<String, Object>> submitHumanInput(UUID taskId, Map<String, Object> input,
                                                        UUID tenantId, UUID userId) {
         return webClient.post()
-                .uri("/api/v1/tasks/{taskId}/human-input", taskId)
+                .uri("/api/internal/v1/tasks/{taskId}/human-input", taskId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .bodyValue(input)
@@ -64,7 +64,7 @@ public class AgentRuntimeClient {
 
     public Mono<Void> cancelTask(UUID taskId, UUID tenantId) {
         return webClient.post()
-                .uri("/api/v1/tasks/{taskId}/cancel", taskId)
+                .uri("/api/internal/v1/tasks/{taskId}/cancel", taskId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .retrieve()
                 .bodyToMono(Void.class)
@@ -84,7 +84,7 @@ public class AgentRuntimeClient {
      */
     public Mono<Map<String, Object>> checkReadiness(UUID agentId, UUID userId, UUID tenantId) {
         return webClient.get()
-                .uri("/api/v1/agent-readiness/{agentId}", agentId)
+                .uri("/api/internal/v1/agent-readiness/{agentId}", agentId)
                 .header("X-Tenant-Id", tenantId.toString())
                 .header("X-User-Id", userId.toString())
                 .retrieve()

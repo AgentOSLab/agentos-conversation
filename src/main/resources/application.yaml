@@ -67,6 +67,7 @@ agentos:
       trust-gateway: true
   services:
     agent-runtime-url: ${AGENT_RUNTIME_URL:http://localhost:8004}
+    mcp-runtime-url: ${MCP_RUNTIME_URL:http://localhost:8005}
     hub-url: ${HUB_URL:http://localhost:8001}
     llm-gateway-url: ${LLM_GATEWAY_URL:http://localhost:8003}
     # NOTE: ADR-046 prohibits Conversation from injecting RAG results into context

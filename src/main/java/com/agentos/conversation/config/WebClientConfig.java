@@ -37,6 +37,11 @@ public class WebClientConfig {
     }
 
     @Bean
+    public WebClient mcpRuntimeWebClient(WebClient.Builder builder) {
+        return withFilters(builder).baseUrl(serviceUrls.getMcpRuntimeUrl()).build();
+    }
+
+    @Bean
     public WebClient hubWebClient(WebClient.Builder builder) {
         return withFilters(builder).baseUrl(serviceUrls.getHubUrl()).build();
     }

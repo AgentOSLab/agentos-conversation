@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 public class ServiceUrlProperties {
 
     private String agentRuntimeUrl = "http://localhost:8004";
+    private String mcpRuntimeUrl = "http://localhost:8005";
     private String hubUrl = "http://localhost:8001";
     private String llmGatewayUrl = "http://localhost:8003";
     // NOTE: ragUrl intentionally absent — Conversation does not call RAG directly (ADR-046).

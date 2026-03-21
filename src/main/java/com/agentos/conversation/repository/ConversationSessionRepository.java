@@ -14,6 +14,18 @@ public interface ConversationSessionRepository extends ReactiveCrudRepository<Co
 
     Mono<ConversationSessionEntity> findByTenantIdAndId(UUID tenantId, UUID id);
 
+    /**
+     * Fetch a session belonging to a specific user — used for user-scoped per-session operations
+     * (ABAC ownership check at the data layer: tenantId + sessionId + userId must all match).
+     */
+    @Query("""
+            SELECT * FROM conversation_sessions
+            WHERE tenant_id = :tenantId
+              AND id = :id
+              AND user_id = :userId
+            """)
+    Mono<ConversationSessionEntity> findByTenantIdAndIdAndUserId(UUID tenantId, UUID id, UUID userId);
+
     @Query("""
             SELECT * FROM conversation_sessions
             WHERE tenant_id = :tenantId

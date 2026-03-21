@@ -23,7 +23,7 @@ public class LlmGatewayClient {
     public Mono<Map<String, Object>> chatCompletion(List<Map<String, Object>> messages,
                                                      List<Map<String, Object>> tools,
                                                      UUID tenantId) {
-        log.debug("LLM Gateway call: endpoint=/api/v1/chat/completions tenant={} toolCount={}",
+        log.debug("LLM Gateway call: endpoint=/api/internal/v1/chat/completions tenant={} toolCount={}",
                 tenantId, tools != null ? tools.size() : 0);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("messages", messages);
@@ -32,7 +32,7 @@ public class LlmGatewayClient {
         }
 
         return webClient.post()
-                .uri("/api/v1/chat/completions")
+                .uri("/api/internal/v1/chat/completions")
                 .header("X-Tenant-Id", tenantId.toString())
                 .bodyValue(body)
                 .retrieve()
@@ -51,7 +51,7 @@ public class LlmGatewayClient {
         }
 
         return webClient.post()
-                .uri("/api/v1/chat/completions")
+                .uri("/api/internal/v1/chat/completions")
                 .header("X-Tenant-Id", tenantId.toString())
                 .bodyValue(body)
                 .retrieve()
@@ -86,7 +86,7 @@ public class LlmGatewayClient {
 
         log.debug("LLM Gateway chat call: tenant={}", tenantId);
         WebClient.RequestBodySpec spec = webClient.post()
-                .uri("/api/v1/chat/completions");
+                .uri("/api/internal/v1/chat/completions");
         if (tenantId != null) {
             spec = spec.header("X-Tenant-Id", tenantId.toString());
         }
