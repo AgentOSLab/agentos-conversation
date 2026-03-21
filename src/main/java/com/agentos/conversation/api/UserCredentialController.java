@@ -1,7 +1,10 @@
 package com.agentos.conversation.api;
 
+import com.agentos.common.iam.IamActions;
+import com.agentos.common.iam.ResourceArn;
 import com.agentos.common.reactive.ReactiveSecurityContext;
 import com.agentos.conversation.integration.UserSystemClient;
+import com.agentos.conversation.security.IamPep;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -20,6 +23,7 @@ import java.util.Map;
 public class UserCredentialController {
 
     private final UserSystemClient userSystemClient;
+    private final IamPep iamPep;
 
     @PutMapping("/{scope}/{key}")
     public Mono<ResponseEntity<Map<String, Object>>> storeCredential(
@@ -28,7 +32,10 @@ public class UserCredentialController {
             @RequestBody Map<String, Object> body) {
         return Mono.zip(ReactiveSecurityContext.currentTenantIdAsUUID(),
                         ReactiveSecurityContext.currentUserIdAsUUID())
-                .flatMap(tuple -> userSystemClient.putUserCredential(tuple.getT1(), tuple.getT2(), scope, key, body))
+                .flatMap(tuple -> iamPep.require(tuple.getT1(), tuple.getT2(),
+                                IamActions.USER_SYSTEM_USER_WRITE,
+                                ResourceArn.userSystemUser(tuple.getT1(), tuple.getT2()))
+                        .then(userSystemClient.putUserCredential(tuple.getT1(), tuple.getT2(), scope, key, body)))
                 .map(ResponseEntity::ok);
     }
 
@@ -36,7 +43,10 @@ public class UserCredentialController {
     public Mono<ResponseEntity<List<Map<String, Object>>>> listCredentials() {
         return Mono.zip(ReactiveSecurityContext.currentTenantIdAsUUID(),
                         ReactiveSecurityContext.currentUserIdAsUUID())
-                .flatMap(tuple -> userSystemClient.listUserCredentials(tuple.getT1(), tuple.getT2()))
+                .flatMap(tuple -> iamPep.require(tuple.getT1(), tuple.getT2(),
+                                IamActions.USER_SYSTEM_USER_READ,
+                                ResourceArn.userSystemUser(tuple.getT1(), tuple.getT2()))
+                        .then(userSystemClient.listUserCredentials(tuple.getT1(), tuple.getT2())))
                 .map(ResponseEntity::ok);
     }
 
@@ -46,7 +56,10 @@ public class UserCredentialController {
             @PathVariable String key) {
         return Mono.zip(ReactiveSecurityContext.currentTenantIdAsUUID(),
                         ReactiveSecurityContext.currentUserIdAsUUID())
-                .flatMap(tuple -> userSystemClient.deleteUserCredential(tuple.getT1(), tuple.getT2(), scope, key))
+                .flatMap(tuple -> iamPep.require(tuple.getT1(), tuple.getT2(),
+                                IamActions.USER_SYSTEM_USER_WRITE,
+                                ResourceArn.userSystemUser(tuple.getT1(), tuple.getT2()))
+                        .then(userSystemClient.deleteUserCredential(tuple.getT1(), tuple.getT2(), scope, key)))
                 .then(Mono.just(ResponseEntity.noContent().<Void>build()));
     }
 }

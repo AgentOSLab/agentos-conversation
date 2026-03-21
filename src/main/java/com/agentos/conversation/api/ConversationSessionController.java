@@ -1,8 +1,11 @@
 package com.agentos.conversation.api;
 
+import com.agentos.conversation.security.IamPep;
 import com.agentos.conversation.model.dto.*;
 import com.agentos.conversation.orchestration.MessageOrchestrator;
 import com.agentos.conversation.service.ConversationSessionService;
+import com.agentos.common.iam.IamActions;
+import com.agentos.common.iam.ResourceArn;
 import com.agentos.common.model.PageResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -26,6 +29,7 @@ public class ConversationSessionController {
 
     private final ConversationSessionService sessionService;
     private final MessageOrchestrator messageOrchestrator;
+    private final IamPep iamPep;
 
     @PostMapping
     public Mono<ResponseEntity<ConversationSessionResponse>> createSession(
@@ -34,7 +38,9 @@ public class ConversationSessionController {
             @Valid @RequestBody CreateSessionRequest request) {
 
         log.info("Creating session: tenant={} userId={} type={}", tenantId, userId, request.getSessionType());
-        return sessionService.createSession(tenantId, userId, request)
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_WRITE,
+                        ResourceArn.conversationSessionWildcard(tenantId))
+                .then(sessionService.createSession(tenantId, userId, request))
                 .map(ConversationSessionResponse::fromEntity)
                 .map(resp -> ResponseEntity.status(HttpStatus.CREATED).body(resp));
     }
@@ -49,7 +55,9 @@ public class ConversationSessionController {
             @RequestParam(defaultValue = "0") long offset) {
 
         log.debug("Listing sessions: tenant={} userId={} status={} type={}", tenantId, userId, status, sessionType);
-        return sessionService.listSessions(tenantId, userId, status, sessionType, limit, offset)
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_READ,
+                        ResourceArn.conversationSessionWildcard(tenantId))
+                .then(sessionService.listSessions(tenantId, userId, status, sessionType, limit, offset))
                 .map(page -> page.map(ConversationSessionResponse::fromEntity))
                 .map(ResponseEntity::ok);
     }
@@ -57,10 +65,13 @@ public class ConversationSessionController {
     @GetMapping("/{sessionId}")
     public Mono<ResponseEntity<ConversationSessionResponse>> getSession(
             @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID sessionId) {
 
         log.debug("Getting session: sessionId={} tenant={}", sessionId, tenantId);
-        return sessionService.getSession(tenantId, sessionId)
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_READ,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(sessionService.getSession(tenantId, sessionId))
                 .map(ConversationSessionResponse::fromEntity)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
@@ -69,10 +80,13 @@ public class ConversationSessionController {
     @PatchMapping("/{sessionId}/title")
     public Mono<ResponseEntity<ConversationSessionResponse>> updateTitle(
             @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID sessionId,
             @RequestBody Map<String, String> body) {
 
-        return sessionService.updateTitle(tenantId, sessionId, body.get("title"))
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_WRITE,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(sessionService.updateTitle(tenantId, sessionId, body.get("title")))
                 .map(ConversationSessionResponse::fromEntity)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
@@ -81,10 +95,13 @@ public class ConversationSessionController {
     @PatchMapping("/{sessionId}/mcp-tools")
     public Mono<ResponseEntity<ConversationSessionResponse>> updateMcpToolConfig(
             @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID sessionId,
             @RequestBody Map<String, Object> config) {
 
-        return sessionService.updateMcpToolConfig(tenantId, sessionId, config)
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_WRITE,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(sessionService.updateMcpToolConfig(tenantId, sessionId, config))
                 .map(ConversationSessionResponse::fromEntity)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
@@ -93,10 +110,13 @@ public class ConversationSessionController {
     @PostMapping("/{sessionId}/complete")
     public Mono<ResponseEntity<ConversationSessionResponse>> completeSession(
             @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID sessionId) {
 
         log.info("Completing session: sessionId={} tenant={}", sessionId, tenantId);
-        return sessionService.updateSessionStatus(tenantId, sessionId, "completed")
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_WRITE,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(sessionService.updateSessionStatus(tenantId, sessionId, "completed"))
                 .map(ConversationSessionResponse::fromEntity)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
@@ -105,10 +125,13 @@ public class ConversationSessionController {
     @PostMapping("/{sessionId}/archive")
     public Mono<ResponseEntity<ConversationSessionResponse>> archiveSession(
             @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID sessionId) {
 
         log.info("Archiving session: sessionId={} tenant={}", sessionId, tenantId);
-        return sessionService.updateSessionStatus(tenantId, sessionId, "archived")
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_WRITE,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(sessionService.updateSessionStatus(tenantId, sessionId, "archived"))
                 .map(ConversationSessionResponse::fromEntity)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
@@ -126,28 +149,38 @@ public class ConversationSessionController {
                 .attachments(request.getAttachments())
                 .build();
 
-        return messageOrchestrator.createAndExecuteRun(tenantId, userId, sessionId, runRequest)
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_EXECUTE,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(messageOrchestrator.createAndExecuteRun(tenantId, userId, sessionId, runRequest))
                 .map(run -> ResponseEntity.status(HttpStatus.ACCEPTED).body(run));
     }
 
     @GetMapping("/{sessionId}/messages")
     public Mono<ResponseEntity<PageResponse<ConversationMessageResponse>>> getMessages(
+            @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID sessionId,
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(defaultValue = "0") long offset) {
 
-        return sessionService.getMessagesPaged(sessionId, limit, offset)
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_READ,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(sessionService.getMessagesPaged(sessionId, limit, offset))
                 .map(page -> page.map(ConversationMessageResponse::fromEntity))
                 .map(ResponseEntity::ok);
     }
 
     @PostMapping("/{sessionId}/messages/{messageId}/pin")
     public Mono<ResponseEntity<Void>> pinMessage(
+            @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID sessionId,
             @PathVariable UUID messageId,
             @RequestParam(defaultValue = "true") boolean pinned) {
 
-        return sessionService.pinMessage(messageId, pinned)
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_SESSION_WRITE,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(sessionService.pinMessage(messageId, pinned))
                 .then(Mono.just(ResponseEntity.ok().<Void>build()));
     }
 
@@ -157,8 +190,12 @@ public class ConversationSessionController {
      */
     @GetMapping(value = "/{sessionId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> streamSessionEvents(
+            @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID sessionId) {
 
-        return messageOrchestrator.streamSessionEvents(sessionId);
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_READ,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .thenMany(messageOrchestrator.streamSessionEvents(sessionId));
     }
 }

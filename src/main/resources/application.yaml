@@ -41,6 +41,10 @@ management:
     tags:
       application: ${spring.application.name}
 
+# PDP calls to user-system; fail-closed on errors unless local debugging
+iam:
+  fail-open: ${IAM_FAIL_OPEN:false}
+
 logging:
   level:
     root: ${LOG_LEVEL:INFO}

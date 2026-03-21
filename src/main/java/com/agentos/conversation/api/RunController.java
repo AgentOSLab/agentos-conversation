@@ -1,8 +1,11 @@
 package com.agentos.conversation.api;
 
+import com.agentos.conversation.security.IamPep;
 import com.agentos.conversation.model.dto.*;
 import com.agentos.conversation.orchestration.MessageOrchestrator;
 import com.agentos.conversation.service.RunService;
+import com.agentos.common.iam.IamActions;
+import com.agentos.common.iam.ResourceArn;
 import com.agentos.common.model.PageResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -30,6 +33,7 @@ public class RunController {
 
     private final MessageOrchestrator orchestrator;
     private final RunService runService;
+    private final IamPep iamPep;
 
     @PostMapping("/runs")
     public Mono<ResponseEntity<RunResponse>> createRun(
@@ -39,7 +43,9 @@ public class RunController {
             @Valid @RequestBody CreateRunRequest request) {
 
         log.info("Creating run: sessionId={} tenant={} userId={}", sessionId, tenantId, userId);
-        return orchestrator.createAndExecuteRun(tenantId, userId, sessionId, request)
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_EXECUTE,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(orchestrator.createAndExecuteRun(tenantId, userId, sessionId, request))
                 .map(response -> ResponseEntity.status(HttpStatus.CREATED).body(response));
     }
 
@@ -51,17 +57,22 @@ public class RunController {
             @PathVariable UUID runId,
             @RequestHeader(value = "Last-Event-ID", required = false) String lastEventId) {
 
-        return orchestrator.streamRunEvents(runId, sessionId, tenantId, userId, lastEventId);
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_READ,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .thenMany(orchestrator.streamRunEvents(runId, sessionId, tenantId, userId, lastEventId));
     }
 
     @PostMapping("/runs/{runId}/cancel")
     public Mono<ResponseEntity<RunResponse>> cancelRun(
             @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID sessionId,
             @PathVariable UUID runId) {
 
         log.info("Cancelling run: runId={} sessionId={} tenant={}", runId, sessionId, tenantId);
-        return orchestrator.cancelRun(runId, tenantId)
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_EXECUTE,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(orchestrator.cancelRun(runId, tenantId))
                 .map(ResponseEntity::ok);
     }
 
@@ -73,7 +84,9 @@ public class RunController {
             @PathVariable UUID runId,
             @Valid @RequestBody SubmitRunInputRequest request) {
 
-        return orchestrator.submitHumanInput(runId, tenantId, userId, request)
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_EXECUTE,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(orchestrator.submitHumanInput(runId, tenantId, userId, request))
                 .then(Mono.just(ResponseEntity.ok().<Void>build()));
     }
 
@@ -84,18 +97,23 @@ public class RunController {
             @PathVariable UUID sessionId,
             @PathVariable UUID runId) {
 
-        return orchestrator.retryRun(runId, sessionId, tenantId, userId)
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_EXECUTE,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(orchestrator.retryRun(runId, sessionId, tenantId, userId))
                 .map(response -> ResponseEntity.status(HttpStatus.CREATED).body(response));
     }
 
     @GetMapping("/runs/{runId}")
     public Mono<ResponseEntity<RunResponse>> getRunStatus(
             @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID sessionId,
             @PathVariable UUID runId) {
 
         log.debug("Getting run status: runId={} sessionId={}", runId, sessionId);
-        return runService.getRun(runId, tenantId)
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_READ,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(runService.getRun(runId, tenantId))
                 .map(RunResponse::fromEntity)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
@@ -104,12 +122,15 @@ public class RunController {
     @GetMapping("/runs")
     public Mono<ResponseEntity<PageResponse<RunResponse>>> listRuns(
             @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestHeader("X-User-Id") UUID userId,
             @PathVariable UUID sessionId,
             @RequestParam(defaultValue = "20") int limit,
             @RequestParam(defaultValue = "0") long offset) {
 
         log.debug("Listing runs: sessionId={} tenant={}", sessionId, tenantId);
-        return runService.listRuns(sessionId, tenantId, limit, offset)
+        return iamPep.require(tenantId, userId, IamActions.CONVERSATION_RUN_READ,
+                        ResourceArn.conversationSession(tenantId, sessionId))
+                .then(runService.listRuns(sessionId, tenantId, limit, offset))
                 .map(ResponseEntity::ok);
     }
 }
