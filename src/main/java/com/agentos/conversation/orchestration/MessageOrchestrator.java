@@ -65,6 +65,9 @@ public class MessageOrchestrator {
     @Value("${agentos.run.task-run-ttl-hours:24}")
     private int taskRunTtlHours;
 
+    @Value("${agentos.platform-tools.timeouts.dispatch:120s}")
+    private Duration platformToolDispatchTimeout;
+
     /**
      * Create a Run from a user message, persist the message, route intent,
      * and kick off execution. Returns immediately with RunResponse.
@@ -288,7 +291,8 @@ public class MessageOrchestrator {
                                     .summary("Calling " + toolName).build(),
                             Map.of("toolName", toolName, "callId", callId)).block();
 
-                    String result = conversationPlatformToolDispatcher.dispatch(toolName, args, toolCtx);
+                    String result = conversationPlatformToolDispatcher.dispatch(toolName, args, toolCtx)
+                            .block(platformToolDispatchTimeout);
 
                     // Publish tool_result event
                     sseAggregator.publishEvent(runId, sessionId, "tool_result",

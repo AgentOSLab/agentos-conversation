@@ -72,9 +72,8 @@ public class ConversationPlatformToolConfig {
     private String defaultNamespacePattern;
 
     /**
-     * Bounded wait for RAG search — handlers run synchronously but
-     * {@link com.agentos.conversation.orchestration.MessageOrchestrator} schedules the tool loop on
-     * {@code boundedElastic}; a timeout still prevents pool threads from wedging on a stuck upstream.
+     * Bounded wait for RAG search — handlers compose reactive calls; the orchestrator applies
+     * a single bounded {@code block} per tool dispatch.
      */
     @Value("${agentos.platform-tools.timeouts.search:30s}")
     private Duration searchTimeout;
@@ -120,22 +119,19 @@ public class ConversationPlatformToolConfig {
             }
             // P7-RAG fix: cap topK to prevent LLM from requesting excessive results
             int topK = Math.min(toInt(args.get("top_k"), 5), 20);
-            try {
-                Map<String, Object> result = ragClient.post()
-                        .uri("/api/v1/search")
-                        .header("X-Tenant-Id", ctx.getTenantId() != null ? ctx.getTenantId().toString() : "")
-                        .bodyValue(Map.of("query", query, "namespacePaths", namespaces, "topK", topK))
-                        .retrieve()
-                        .bodyToMono(new org.springframework.core.ParameterizedTypeReference<Map<String, Object>>() {})
-                        .timeout(searchTimeout)
-                        .onErrorResume(e -> Mono.just(Map.of(
-                                "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(),
-                                "results", List.of())))
-                        .block(searchTimeout.plusSeconds(2));
-                return toJson(om, result != null ? result : Map.of("results", List.of()));
-            } catch (Exception e) {
-                return toJson(om, Map.of("error", "Knowledge search failed: " + e.getMessage(), "results", List.of()));
-            }
+            return ragClient.post()
+                    .uri("/api/v1/search")
+                    .header("X-Tenant-Id", ctx.getTenantId() != null ? ctx.getTenantId().toString() : "")
+                    .bodyValue(Map.of("query", query, "namespacePaths", namespaces, "topK", topK))
+                    .retrieve()
+                    .bodyToMono(new org.springframework.core.ParameterizedTypeReference<Map<String, Object>>() {})
+                    .timeout(searchTimeout)
+                    .onErrorResume(e -> Mono.just(Map.of(
+                            "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(),
+                            "results", List.of())))
+                    .map(result -> toJson(om, result != null ? result : Map.of("results", List.of())))
+                    .onErrorResume(e -> Mono.just(toJson(om,
+                            Map.of("error", "Knowledge search failed: " + e.getMessage(), "results", List.of()))));
         };
     }
 
@@ -145,19 +141,19 @@ public class ConversationPlatformToolConfig {
             String name = (String) args.getOrDefault("name", "unnamed");
             String content = (String) args.getOrDefault("content", "");
             String type = (String) args.getOrDefault("type", "text");
-            try {
-                Map<String, Object> artifact = new LinkedHashMap<>();
-                artifact.put("name", name);
-                artifact.put("content", content);
-                artifact.put("type", type);
-                artifact.put("createdAt", System.currentTimeMillis());
-                String key = "artifact:" + ctx.getTenantId() + ":" + ctx.getTaskId() + ":" + name;
-                redis.opsForValue().set(key, om.writeValueAsString(artifact),
-                        java.time.Duration.ofDays(7)).block(redisOpTimeout);
-                return toJson(om, Map.of("status", "saved", "name", name, "type", type, "size", content.length()));
-            } catch (Exception e) {
-                return toJson(om, Map.of("error", "Failed to save artifact: " + e.getMessage()));
-            }
+            return Mono.fromCallable(() -> {
+                        Map<String, Object> artifact = new LinkedHashMap<>();
+                        artifact.put("name", name);
+                        artifact.put("content", content);
+                        artifact.put("type", type);
+                        artifact.put("createdAt", System.currentTimeMillis());
+                        String key = "artifact:" + ctx.getTenantId() + ":" + ctx.getTaskId() + ":" + name;
+                        return new String[] { key, om.writeValueAsString(artifact) };
+                    })
+                    .flatMap(kv -> redis.opsForValue().set(kv[0], kv[1], java.time.Duration.ofDays(7))
+                            .timeout(redisOpTimeout)
+                            .thenReturn(toJson(om, Map.of("status", "saved", "name", name, "type", type, "size", content.length()))))
+                    .onErrorResume(e -> Mono.just(toJson(om, Map.of("error", "Failed to save artifact: " + e.getMessage()))));
         };
     }
 
@@ -166,13 +162,10 @@ public class ConversationPlatformToolConfig {
         return (toolName, args, ctx) -> {
             String name = (String) args.getOrDefault("name", "");
             String key = "artifact:" + ctx.getTenantId() + ":" + ctx.getTaskId() + ":" + name;
-            try {
-                String json = redis.opsForValue().get(key).block(redisOpTimeout);
-                if (json == null) return toJson(om, Map.of("error", "Artifact not found: " + name));
-                return json;
-            } catch (Exception e) {
-                return toJson(om, Map.of("error", "Failed to get artifact: " + e.getMessage()));
-            }
+            return redis.opsForValue().get(key)
+                    .timeout(redisOpTimeout)
+                    .switchIfEmpty(Mono.just(toJson(om, Map.of("error", "Artifact not found: " + name))))
+                    .onErrorResume(e -> Mono.just(toJson(om, Map.of("error", "Failed to get artifact: " + e.getMessage()))));
         };
     }
 
