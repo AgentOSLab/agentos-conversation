@@ -79,17 +79,15 @@ public class LlmGatewayClient {
     }
 
     public Mono<Map<String, Object>> chat(Map<String, Object> requestBody) {
-        UUID tenantId = null;
-        if (requestBody.containsKey("tenantId")) {
-            tenantId = UUID.fromString(requestBody.get("tenantId").toString());
+        if (!requestBody.containsKey("tenantId")) {
+            return Mono.error(new IllegalArgumentException("tenantId is required for LLM Gateway chat"));
         }
+        UUID tenantId = UUID.fromString(requestBody.get("tenantId").toString());
 
         log.debug("LLM Gateway chat call: tenant={}", tenantId);
         WebClient.RequestBodySpec spec = webClient.post()
-                .uri("/api/internal/v1/chat/completions");
-        if (tenantId != null) {
-            spec = spec.header("X-Tenant-Id", tenantId.toString());
-        }
+                .uri("/api/internal/v1/chat/completions")
+                .header("X-Tenant-Id", tenantId.toString());
 
         return spec.bodyValue(requestBody)
                 .retrieve()
