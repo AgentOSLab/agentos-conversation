@@ -71,6 +71,10 @@ public class ConversationPlatformToolConfig {
     @Value("${agentos.platform-tools.search-knowledge.default-namespace:memory/{tenantId}/general}")
     private String defaultNamespacePattern;
 
+    /** Industry-shared knowledge segment (read-only for all tenants in the industry). */
+    @Value("${agentos.platform-tools.search-knowledge.shared-namespace:memory/shared/general}")
+    private String sharedNamespace;
+
     /**
      * Bounded wait for RAG search — handlers compose reactive calls; the orchestrator applies
      * a single bounded {@code block} per tool dispatch.
@@ -114,8 +118,12 @@ public class ConversationPlatformToolConfig {
             if (namespaces.isEmpty() && ctx.getTenantId() != null) {
                 String tenantDefault = defaultNamespacePattern
                         .replace("{tenantId}", ctx.getTenantId().toString());
-                namespaces = List.of(tenantDefault);
-                log.debug("G-002: No namespaces provided, defaulting to {}", tenantDefault);
+                namespaces = new ArrayList<>();
+                if (sharedNamespace != null && !sharedNamespace.isBlank()) {
+                    namespaces.add(sharedNamespace.trim());
+                }
+                namespaces.add(tenantDefault);
+                log.debug("G-002: No namespaces provided, defaulting to {}", namespaces);
             }
             // P7-RAG fix: cap topK to prevent LLM from requesting excessive results
             int topK = Math.min(toInt(args.get("top_k"), 5), 20);

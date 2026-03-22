@@ -95,7 +95,8 @@ public class MessageOrchestrator {
                                             log.info("Run {} created for session {} (route={}, interactionMode={})",
                                                     run.getId(), sessionId, routeType, route.getInteractionMode());
 
-                                            kickOffExecution(run, session, route, request.getContent(), tenantId, userId);
+                                            kickOffExecution(run, session, route, request.getContent(), tenantId, userId,
+                                                    effectiveDataSensitivity(request));
 
                                             // Auto-generate session title on first user message (fire-and-forget)
                                             if (session.getMessageCount() == 0
@@ -116,9 +117,9 @@ public class MessageOrchestrator {
 
     private void kickOffExecution(RunEntity run, ConversationSessionEntity session,
                                    RouteDecision route, String content,
-                                   UUID tenantId, UUID userId) {
+                                   UUID tenantId, UUID userId, String dataSensitivity) {
         if (route.getRouteType() == RouteType.SIMPLE_CHAT) {
-            executeSimpleChat(run, session, content, tenantId)
+            executeSimpleChat(run, session, content, tenantId, dataSensitivity)
                     .subscribe(
                             v -> {},
                             e -> {
@@ -128,7 +129,7 @@ public class MessageOrchestrator {
                             }
                     );
         } else {
-            executeAgentTask(run, session, route, content, tenantId, userId)
+            executeAgentTask(run, session, route, content, tenantId, userId, dataSensitivity)
                     .subscribe(
                             v -> {},
                             e -> {
@@ -153,7 +154,7 @@ public class MessageOrchestrator {
      */
     @SuppressWarnings("unchecked")
     private Mono<Void> executeSimpleChat(RunEntity run, ConversationSessionEntity session,
-                                          String content, UUID tenantId) {
+                                          String content, UUID tenantId, String dataSensitivity) {
         return runService.markRunning(run.getId())
                 .then(Mono.defer(() -> {
                     ContextRequest ctxReq = ContextRequest.builder()
@@ -180,9 +181,9 @@ public class MessageOrchestrator {
                                         .then(sseAggregator.publishMessageStarted(runId, sessionId))
                                         .then(Mono.defer(() -> {
                                             if (platformTools.isEmpty()) {
-                                                return streamPureLlmResponse(run, ctx, tenantId);
+                                                return streamPureLlmResponse(run, ctx, tenantId, dataSensitivity);
                                             }
-                                            return executeToolCallLoop(run, ctx, platformTools, tenantId)
+                                            return executeToolCallLoop(run, ctx, platformTools, tenantId, dataSensitivity)
                                                     .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
                                         }))
                                         .onErrorResume(e -> {
@@ -200,13 +201,14 @@ public class MessageOrchestrator {
     /**
      * Pure streaming path — no tools, direct LLM stream. Original simple chat behavior.
      */
-    private Mono<Void> streamPureLlmResponse(RunEntity run, AssembledContext ctx, UUID tenantId) {
+    private Mono<Void> streamPureLlmResponse(RunEntity run, AssembledContext ctx, UUID tenantId,
+                                              String dataSensitivity) {
         UUID runId = run.getId();
         UUID sessionId = run.getSessionId();
         StringBuilder fullContent = new StringBuilder();
         AtomicInteger tokenIndex = new AtomicInteger(0);
 
-        return llmGatewayClient.chatCompletionStream(ctx.getMessages(), ctx.getTools(), tenantId)
+        return llmGatewayClient.chatCompletionStream(ctx.getMessages(), ctx.getTools(), tenantId, dataSensitivity)
                 .concatMap(chunk -> {
                     String tokenContent = extractStreamToken(chunk);
                     String thinkingContent = extractStreamThinking(chunk);
@@ -231,7 +233,8 @@ public class MessageOrchestrator {
      * Final text response is emitted as token events for streaming UX.
      */
     private Mono<Void> executeToolCallLoop(RunEntity run, AssembledContext ctx,
-                                            List<Map<String, Object>> platformTools, UUID tenantId) {
+                                            List<Map<String, Object>> platformTools, UUID tenantId,
+                                            String dataSensitivity) {
         UUID runId = run.getId();
         UUID sessionId = run.getSessionId();
 
@@ -248,7 +251,7 @@ public class MessageOrchestrator {
 
             for (int iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
                 Map<String, Object> response = llmGatewayClient
-                        .chatCompletion(messages, platformTools, tenantId).block();
+                        .chatCompletion(messages, platformTools, tenantId, dataSensitivity).block();
 
                 if (response == null) {
                     return "";
@@ -422,7 +425,7 @@ public class MessageOrchestrator {
     @SuppressWarnings("unchecked")
     private Mono<Void> executeAgentTask(RunEntity run, ConversationSessionEntity session,
                                          RouteDecision route, String content,
-                                         UUID tenantId, UUID userId) {
+                                         UUID tenantId, UUID userId, String dataSensitivity) {
         // Pre-flight: check agent readiness only when session is bound to an agent
         Mono<Boolean> readinessMono = Mono.just(true);
         if (session.getBoundEntityId() != null) {
@@ -488,6 +491,7 @@ public class MessageOrchestrator {
                                     if (session.getBoundEntityId() != null) {
                                         taskRequest.put("agentId", session.getBoundEntityId().toString());
                                     }
+                                    taskRequest.put("dataSensitivity", dataSensitivity);
 
                                     return sseAggregator.publishContextUsage(
                                                     run.getId(), run.getSessionId(), ctxUsage)
@@ -619,7 +623,8 @@ public class MessageOrchestrator {
                                                 .switchIfEmpty(Mono.error(new RuntimeException(
                                                         "Input message not found for session: " + sessionId)))
                                                 .flatMap(msg -> {
-                                                    kickOffExecution(newRun, session, route, msg.getContent(), tenantId, userId);
+                                                    kickOffExecution(newRun, session, route, msg.getContent(), tenantId, userId,
+                                                            "standard");
                                                     return Mono.just(RunResponse.fromEntity(newRun));
                                                 });
                                     }));
@@ -653,6 +658,14 @@ public class MessageOrchestrator {
             case "workflow" -> RouteType.WORKFLOW;
             default -> RouteType.AGENT_TASK;
         };
+    }
+
+    private static String effectiveDataSensitivity(CreateRunRequest request) {
+        if (request == null || request.getDataSensitivity() == null
+                || request.getDataSensitivity().isBlank()) {
+            return "standard";
+        }
+        return request.getDataSensitivity().trim();
     }
 
     /**

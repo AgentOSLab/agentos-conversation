@@ -23,12 +23,22 @@ public class LlmGatewayClient {
     public Mono<Map<String, Object>> chatCompletion(List<Map<String, Object>> messages,
                                                      List<Map<String, Object>> tools,
                                                      UUID tenantId) {
-        log.debug("LLM Gateway call: endpoint=/api/internal/v1/chat/completions tenant={} toolCount={}",
-                tenantId, tools != null ? tools.size() : 0);
+        return chatCompletion(messages, tools, tenantId, "standard");
+    }
+
+    public Mono<Map<String, Object>> chatCompletion(List<Map<String, Object>> messages,
+                                                     List<Map<String, Object>> tools,
+                                                     UUID tenantId,
+                                                     String dataSensitivity) {
+        log.debug("LLM Gateway call: endpoint=/api/internal/v1/chat/completions tenant={} toolCount={} sensitivity={}",
+                tenantId, tools != null ? tools.size() : 0, dataSensitivity);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("messages", messages);
         if (tools != null && !tools.isEmpty()) {
             body.put("tools", tools);
+        }
+        if (dataSensitivity != null && !dataSensitivity.isBlank()) {
+            body.put("dataSensitivity", dataSensitivity);
         }
 
         return webClient.post()
@@ -43,11 +53,21 @@ public class LlmGatewayClient {
     public Flux<Map<String, Object>> chatCompletionStream(List<Map<String, Object>> messages,
                                                            List<Map<String, Object>> tools,
                                                            UUID tenantId) {
+        return chatCompletionStream(messages, tools, tenantId, "standard");
+    }
+
+    public Flux<Map<String, Object>> chatCompletionStream(List<Map<String, Object>> messages,
+                                                           List<Map<String, Object>> tools,
+                                                           UUID tenantId,
+                                                           String dataSensitivity) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("messages", messages);
         body.put("stream", true);
         if (tools != null && !tools.isEmpty()) {
             body.put("tools", tools);
+        }
+        if (dataSensitivity != null && !dataSensitivity.isBlank()) {
+            body.put("dataSensitivity", dataSensitivity);
         }
 
         return webClient.post()

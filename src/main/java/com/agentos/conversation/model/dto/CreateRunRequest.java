@@ -24,4 +24,9 @@ public class CreateRunRequest {
 
     @Builder.Default
     private boolean stream = true;
+
+    /**
+     * LLM Gateway compliance routing ({@code dataSensitivity}). When unset, callers default to {@code standard}.
+     */
+    private String dataSensitivity;
 }
