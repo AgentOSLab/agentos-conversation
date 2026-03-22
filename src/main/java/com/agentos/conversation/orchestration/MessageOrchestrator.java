@@ -25,7 +25,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -586,11 +588,12 @@ public class MessageOrchestrator {
                         return Mono.error(new RuntimeException("Run " + runId + " has no associated task"));
                     }
 
-                    Map<String, Object> input = new LinkedHashMap<>();
-                    input.put("interactionId", request.getInteractionId());
-                    if (request.getContent() != null) input.put("content", request.getContent());
-                    if (request.getApproved() != null) input.put("approved", request.getApproved());
-                    if (request.getSelectedOptions() != null) input.put("selectedOptions", request.getSelectedOptions());
+                    final Map<String, Object> input;
+                    try {
+                        input = RunHumanInputPayloadMapper.toAgentRuntimeBody(request);
+                    } catch (IllegalArgumentException ex) {
+                        return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, ex.getMessage()));
+                    }
 
                     return agentRuntimeClient.submitHumanInput(run.getTaskId(), input, tenantId, userId)
                             .then(runService.updateStatus(runId, "running"));
@@ -713,4 +716,5 @@ public class MessageOrchestrator {
         }
         return null;
     }
+
 }

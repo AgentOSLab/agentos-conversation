@@ -3,7 +3,6 @@ package com.agentos.conversation.api;
 import com.agentos.common.iam.IamActions;
 import com.agentos.common.iam.ResourceArn;
 import com.agentos.conversation.security.IamPep;
-import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.ResponseEntity;
@@ -22,14 +21,20 @@ import java.util.UUID;
  */
 @RestController
 @RequestMapping("/api/v1/agent-readiness")
-@RequiredArgsConstructor
 public class AgentReadinessProxyController {
 
     private static final ParameterizedTypeReference<Map<String, Object>> MAP_TYPE =
             new ParameterizedTypeReference<>() {};
 
     private final IamPep iamPep;
-    private final @Qualifier("agentRuntimeWebClient") WebClient agentRuntimeClient;
+    private final WebClient agentRuntimeClient;
+
+    public AgentReadinessProxyController(
+            IamPep iamPep,
+            @Qualifier("agentRuntimeWebClient") WebClient agentRuntimeClient) {
+        this.iamPep = iamPep;
+        this.agentRuntimeClient = agentRuntimeClient;
+    }
 
     @GetMapping("/{agentId}")
     public Mono<ResponseEntity<Map<String, Object>>> checkReadiness(

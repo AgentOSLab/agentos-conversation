@@ -10,6 +10,8 @@ import org.springframework.stereotype.Component;
 public class ServiceUrlProperties {
 
     private String agentRuntimeUrl = "http://localhost:8004";
+    /** Workflow Runtime internal API base (DAG executions). */
+    private String workflowRuntimeUrl = "http://localhost:8015";
     private String hubUrl = "http://localhost:8001";
     private String llmGatewayUrl = "http://localhost:8003";
     // NOTE: ragUrl intentionally absent — Conversation does not call RAG directly (ADR-046).

@@ -20,4 +20,6 @@ public class SubmitRunInputRequest {
     private String content;
     private Boolean approved;
     private List<String> selectedOptions;
+    /** HITL consent persistence scope when approving (once / session / always). */
+    private String consentScope;
 }

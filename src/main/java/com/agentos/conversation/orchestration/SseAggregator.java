@@ -550,6 +550,7 @@ public class SseAggregator {
             // description, and a resumeToken to call the consent endpoint.
             case "operation_authorization", "mcp.hitl.required" -> {
                 runEvent.setInteractionType("OPERATION_AUTHORIZATION");
+                runEvent.setInteractionId(resolveHitlInteractionId(payload));
                 runEvent.setToolName(strVal(payload, "operation"));
                 runEvent.setPrompt(strVal(payload, "description"));
                 // Pass risk level and resumeToken via metadata map
@@ -560,10 +561,15 @@ public class SseAggregator {
                 if (rawMeta instanceof Map<?,?> rawMap) {
                     rawMap.forEach((k, v) -> meta.put(k.toString(), v));
                 }
+                Object topConsent = payload.get("consentOptions");
+                if (topConsent != null) {
+                    meta.put("consentOptions", topConsent);
+                }
                 if (!meta.isEmpty()) runEvent.setArguments(meta);
             }
             case "skill.hitl.required", "subagent.hitl.required", "hitl.required", "task.hitl.required" -> {
                 runEvent.setInteractionType("HITL_REQUEST");
+                runEvent.setInteractionId(resolveHitlInteractionId(payload));
                 runEvent.setToolName(strVal(payload, "operation"));
                 runEvent.setPrompt(strVal(payload, "description"));
                 Map<String, Object> meta = new java.util.LinkedHashMap<>();
@@ -572,6 +578,10 @@ public class SseAggregator {
                 Object rawMeta = payload.get("metadata");
                 if (rawMeta instanceof Map<?,?> rawMap) {
                     rawMap.forEach((k, v) -> meta.put(k.toString(), v));
+                }
+                Object topConsentSkill = payload.get("consentOptions");
+                if (topConsentSkill != null) {
+                    meta.put("consentOptions", topConsentSkill);
                 }
                 if (!meta.isEmpty()) runEvent.setArguments(meta);
             }
@@ -821,6 +831,36 @@ public class SseAggregator {
             log.warn("JSON serialization failed: {}", e.getMessage());
             return "{}";
         }
+    }
+
+    /**
+     * Run input API requires a non-blank {@code interactionId}. Propagated HITL payloads
+     * from Agent Runtime may omit it; derive from resume token or root task id when needed.
+     */
+    private String resolveHitlInteractionId(Map<String, Object> payload) {
+        String id = strVal(payload, "interactionId");
+        if (id != null && !id.isBlank()) {
+            return id;
+        }
+        id = strVal(payload, "resumeToken");
+        if (id != null && !id.isBlank()) {
+            return id;
+        }
+        Object rawMeta = payload.get("metadata");
+        if (rawMeta instanceof Map<?, ?> metaMap) {
+            Object rt = metaMap.get("resumeToken");
+            if (rt != null) {
+                String s = String.valueOf(rt);
+                if (!s.isBlank()) {
+                    return s;
+                }
+            }
+        }
+        id = strVal(payload, "taskId");
+        if (id != null && !id.isBlank()) {
+            return id;
+        }
+        return null;
     }
 
     private String strVal(Map<String, Object> map, String key) {

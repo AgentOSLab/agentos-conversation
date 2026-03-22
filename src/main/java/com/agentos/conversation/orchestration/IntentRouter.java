@@ -45,16 +45,7 @@ public class IntentRouter {
             "process", "format", "validate", "test", "debug", "optimize",
             "refactor", "publish", "list", "query", "filter", "merge", "split",
             "rename", "move", "copy", "parse", "transform", "monitor", "alert",
-            "notify", "remind", "configure", "setup", "install", "enable", "disable",
-            // Core action verbs (ZH)
-            "创建", "构建", "部署", "运行", "执行", "生成", "分析",
-            "审查", "修复", "更新", "删除", "发送", "迁移", "转换",
-            "计算", "对比", "提取", "总结", "翻译",
-            // Extended action verbs (ZH)
-            "搜索", "查找", "获取", "读取", "写入", "保存", "导出", "导入",
-            "上传", "下载", "安排", "预订", "处理", "格式化", "验证",
-            "调试", "优化", "发布", "查询", "过滤", "合并", "拆分",
-            "配置", "安装", "启用", "禁用", "监控", "提醒", "通知"
+            "notify", "remind", "configure", "setup", "install", "enable", "disable"
     );
 
     /**
@@ -70,19 +61,16 @@ public class IntentRouter {
             "slack", "jira", "github", "git", "repo", "repository",
             "url", "link", "website", "page", "webhook", "server", "service",
             // Work items
-            "message", "chat", "ticket", "issue", "task", "event", "meeting",
-            // ZH equivalents
-            "文件", "邮件", "日历", "数据库", "代码", "报告", "文档",
-            "表格", "图片", "视频", "链接", "消息", "工单", "任务", "会议"
+            "message", "chat", "ticket", "issue", "task", "event", "meeting"
     );
 
     private static final Pattern GREETING_PATTERN = Pattern.compile(
-            "^(hi|hello|hey|thanks|ok|好的|你好|谢谢|嗯|哦)\\b",
+            "^(hi|hello|hey|thanks|thank you|ok|okay|cheers)\\b",
             Pattern.CASE_INSENSITIVE
     );
 
     private static final Pattern MULTI_STEP_PATTERN = Pattern.compile(
-            "(then|after that|next|finally|first.*then|步骤|然后|接着|最后|首先)",
+            "(then|after that|next|finally|first.*then|step by step|afterwards|subsequently|firstly)",
             Pattern.CASE_INSENSITIVE
     );
 
@@ -228,7 +216,7 @@ public class IntentRouter {
             score += 0.2;
         }
 
-        if (lower.endsWith("?") || lower.endsWith("？")) {
+        if (lower.endsWith("?")) {
             if (actionCount == 0) score -= 0.15;
         }
 

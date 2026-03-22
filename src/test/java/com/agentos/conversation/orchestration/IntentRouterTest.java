@@ -148,9 +148,9 @@ class IntentRouterTest {
         }
 
         @Test
-        @DisplayName("Chinese greeting -> simple_chat")
-        void chineseGreeting_returnsSimpleChat() {
-            RouteDecision d = router.route("你好", defaultSession, tenantId).block();
+        @DisplayName("short English greeting -> simple_chat")
+        void shortEnglishGreeting_returnsSimpleChat() {
+            RouteDecision d = router.route("hey", defaultSession, tenantId).block();
             assertThat(d.getRouteType()).isEqualTo(RouteType.SIMPLE_CHAT);
         }
 

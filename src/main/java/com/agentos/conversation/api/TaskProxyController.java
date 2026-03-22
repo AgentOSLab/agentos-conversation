@@ -3,7 +3,6 @@ package com.agentos.conversation.api;
 import com.agentos.common.iam.IamActions;
 import com.agentos.common.iam.ResourceArn;
 import com.agentos.conversation.security.IamPep;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
@@ -33,14 +32,20 @@ import java.util.UUID;
 @Slf4j
 @RestController
 @RequestMapping("/api/v1/tasks")
-@RequiredArgsConstructor
 public class TaskProxyController {
 
     private static final ParameterizedTypeReference<Map<String, Object>> MAP_TYPE =
             new ParameterizedTypeReference<>() {};
 
     private final IamPep iamPep;
-    private final @Qualifier("agentRuntimeWebClient") WebClient agentRuntimeClient;
+    private final WebClient agentRuntimeClient;
+
+    public TaskProxyController(
+            IamPep iamPep,
+            @Qualifier("agentRuntimeWebClient") WebClient agentRuntimeClient) {
+        this.iamPep = iamPep;
+        this.agentRuntimeClient = agentRuntimeClient;
+    }
 
     @PostMapping
     public Mono<ResponseEntity<Map<String, Object>>> submitTask(
