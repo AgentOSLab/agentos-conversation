@@ -68,6 +68,7 @@ agentos:
   services:
     agent-runtime-url: ${AGENT_RUNTIME_URL:http://localhost:8004}
     workflow-runtime-url: ${WORKFLOW_RUNTIME_URL:http://localhost:8015}
+    sandbox-url: ${SANDBOX_URL:http://localhost:8014}
     mcp-runtime-url: ${MCP_RUNTIME_URL:http://localhost:8005}
     hub-url: ${HUB_URL:http://localhost:8001}
     llm-gateway-url: ${LLM_GATEWAY_URL:http://localhost:8003}
