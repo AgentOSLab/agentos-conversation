@@ -143,6 +143,9 @@ public class SseAggregator {
             // can render an "Approve tool operation?" UI (not the generic waiting_for_input).
             Map.entry("mcp.hitl.required", "operation_authorization"),
             Map.entry("hitl.required", "waiting_for_input"),
+            // Normalized aliases for frontends expecting explicit HITL event names
+            Map.entry("task.hitl.required", "hitl_request"),
+            Map.entry("task.hitl.resolved", "hitl_resolved"),
             Map.entry("step.completed", "step_completed"),
             Map.entry("step.failed", "step_failed")
     );
@@ -491,7 +494,8 @@ public class SseAggregator {
 
                         applyAgentRuntimePayload(runEvent, eventType, payload);
 
-                        if ("waiting_for_input".equals(mappedType)) {
+                        if ("waiting_for_input".equals(mappedType) || "hitl_request".equals(mappedType)
+                                || "operation_authorization".equals(mappedType)) {
                             return bufferAndPublish(runId, runEvent, seq)
                                     .then(runService.updateStatus(runId, "waiting_for_input"));
                         }
@@ -544,7 +548,7 @@ public class SseAggregator {
             // GAP-HITL-001 fix: populate all HITL fields for MCP tool authorization events
             // so the frontend can render "Approve tool operation?" with tool name, risk level,
             // description, and a resumeToken to call the consent endpoint.
-            case "operation_authorization" -> {
+            case "operation_authorization", "mcp.hitl.required" -> {
                 runEvent.setInteractionType("OPERATION_AUTHORIZATION");
                 runEvent.setToolName(strVal(payload, "operation"));
                 runEvent.setPrompt(strVal(payload, "description"));
@@ -557,6 +561,25 @@ public class SseAggregator {
                     rawMap.forEach((k, v) -> meta.put(k.toString(), v));
                 }
                 if (!meta.isEmpty()) runEvent.setArguments(meta);
+            }
+            case "skill.hitl.required", "subagent.hitl.required", "hitl.required", "task.hitl.required" -> {
+                runEvent.setInteractionType("HITL_REQUEST");
+                runEvent.setToolName(strVal(payload, "operation"));
+                runEvent.setPrompt(strVal(payload, "description"));
+                Map<String, Object> meta = new java.util.LinkedHashMap<>();
+                String riskLevel = strVal(payload, "riskLevel");
+                if (riskLevel != null) meta.put("riskLevel", riskLevel);
+                Object rawMeta = payload.get("metadata");
+                if (rawMeta instanceof Map<?,?> rawMap) {
+                    rawMap.forEach((k, v) -> meta.put(k.toString(), v));
+                }
+                if (!meta.isEmpty()) runEvent.setArguments(meta);
+            }
+            case "task.hitl.resolved" -> {
+                runEvent.setInteractionType("HITL_RESOLVED");
+                String op = strVal(payload, "operation");
+                String approved = strVal(payload, "approved");
+                runEvent.setContent(op != null ? op + " approved=" + approved : approved);
             }
             case "mode_selected" -> runEvent.setContent(strVal(payload, "mode"));
             case "mode_escalated" -> runEvent.setContent(strVal(payload, "newMode"));
@@ -624,6 +647,13 @@ public class SseAggregator {
             case "human_input_required", "waiting_for_input" -> DisplayMetadata.builder()
                     .category("interaction").priority("important")
                     .summary("Waiting for your input").build();
+            case "mcp.hitl.required", "skill.hitl.required", "subagent.hitl.required", "task.hitl.required" ->
+                    DisplayMetadata.builder()
+                            .category("interaction").priority("important")
+                            .summary("Approval required: " + strVal(payload, "operation")).build();
+            case "task.hitl.resolved" -> DisplayMetadata.builder()
+                    .category("interaction").priority("detail")
+                    .summary("HITL resolved").build();
             case "mode_selected" -> DisplayMetadata.builder()
                     .category("execution").priority("important")
                     .summary("Execution mode: " + strVal(payload, "mode")).build();
