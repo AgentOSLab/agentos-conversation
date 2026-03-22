@@ -135,17 +135,21 @@ public class ConversationPlatformToolConfig {
         };
     }
 
+    @SuppressWarnings("unchecked")
     private PlatformToolHandler saveArtifactHandler(
             org.springframework.data.redis.core.ReactiveStringRedisTemplate redis, ObjectMapper om) {
         return (toolName, args, ctx) -> {
             String name = (String) args.getOrDefault("name", "unnamed");
             String content = (String) args.getOrDefault("content", "");
             String type = (String) args.getOrDefault("type", "text");
+            Map<String, Object> metadata = args.get("metadata") instanceof Map<?, ?>
+                    ? (Map<String, Object>) args.get("metadata") : Map.of();
             return Mono.fromCallable(() -> {
                         Map<String, Object> artifact = new LinkedHashMap<>();
                         artifact.put("name", name);
                         artifact.put("content", content);
                         artifact.put("type", type);
+                        artifact.put("metadata", metadata);
                         artifact.put("createdAt", System.currentTimeMillis());
                         String key = "artifact:" + ctx.getTenantId() + ":" + ctx.getTaskId() + ":" + name;
                         return new String[] { key, om.writeValueAsString(artifact) };
